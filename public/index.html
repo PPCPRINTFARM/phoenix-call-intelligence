@@ -43,7 +43,7 @@
     // Live call list
     const callsQuery = query(
       collection(db, 'incoming_calls'),
-      orderBy('createdAt', 'desc'),
+      orderBy('startTime', 'desc'),
       limit(50)
     );
 
@@ -91,15 +91,15 @@
     const dotClass = call.status === 'missed' ? 'dr' :
                      call.status === 'active' ? 'dg' : 'dq';
 
-    const srcClass = (call.source || '').toLowerCase().includes('google') ? 'sg' :
-                     (call.source || '').toLowerCase().includes('organic') ? 'so' :
-                     (call.source || '').toLowerCase().includes('email') ? 'se' : 'sd';
+    const srcClass = (call.source_name || '').toLowerCase().includes('google') ? 'sg' :
+                     (call.source_name || '').toLowerCase().includes('organic') ? 'so' :
+                     (call.source_name || '').toLowerCase().includes('email') ? 'se' : 'sd';
 
     const leadLabel = call.lead_label || call.ai?.lead_label || '';
     const leadScore = call.lead_score || call.ai?.lead_score || 0;
     const summary = call.aiSummary || call.ai?.summary || '';
 
-    const timeAgo = getTimeAgo(call.createdAt);
+    const timeAgo = getTimeAgo(call.startTime);
     const duration = formatDuration(call.duration || 0);
 
     el.innerHTML = `
@@ -108,7 +108,7 @@
         <div class="ci-time">${timeAgo}</div>
       </div>
       <div class="ci-meta">
-        <span class="src ${srcClass}">${call.source || 'Direct'}</span>
+        <span class="src ${srcClass}">${call.source_name || 'Direct'}</span>
         <span class="ci-dur">${duration}</span>
       </div>
       <div class="ci-snip">${summary || (call.status === 'missed' ? 'Missed call — no answer.' : 'Processing...')}</div>
@@ -151,7 +151,7 @@
     pillsEl.innerHTML = `
       ${(ai.lead_score || call.lead_score || 0) >= 70 ? `<span class="pill ph">🔥 ${ai.lead_label || 'Hot Lead'}</span>` : ''}
       ${call.status === 'missed' ? `<span class="pill" style="background:var(--red-dim);color:var(--red);">Missed</span>` : ''}
-      <span class="pill ps">${call.source || 'Direct'}</span>
+      <span class="pill ps">${call.source_name || 'Direct'}</span>
       ${call.campaign ? `<span class="pill ps">${call.campaign}</span>` : ''}
     `;
 
@@ -176,12 +176,12 @@
         <div class="tl-spine"><div class="tl-dot td-call">📞</div><div class="tl-line"></div></div>
         <div class="tl-card">
           <div class="tc-top">
-            <div class="tc-type tt-call">${call.direction === 'inbound' ? 'Inbound' : 'Outbound'} Call · ${call.source || 'Direct'}</div>
-            <div class="tc-ts">${formatDateTime(call.createdAt)} · ${formatDuration(call.duration || 0)}</div>
+            <div class="tc-type tt-call">${call.direction === 'inbound' ? 'Inbound' : 'Outbound'} Call · ${call.source_name || 'Direct'}</div>
+            <div class="tc-ts">${formatDateTime(call.startTime)} · ${formatDuration(call.duration || 0)}</div>
           </div>
           <div class="tc-body">
             ${call.callerName ? `<strong>${call.callerName}</strong> called` : 'Call'} 
-            ${call.tracking_number ? `the <strong>${call.source || 'tracking'} number</strong>` : ''}.
+            ${call.tracking_number ? `the <strong>${call.source_name || 'tracking'} number</strong>` : ''}.
             ${call.agent ? `Answered by <strong>${call.agent}</strong>.` : call.status === 'missed' ? '<strong>Not answered.</strong>' : ''}
             ${call.recording_url ? `<a href="${call.recording_url}" target="_blank" style="color:var(--accent);margin-left:6px;">▶ Play Recording</a>` : ''}
           </div>
@@ -204,7 +204,7 @@
       <div class="tl-item">
         <div class="tl-spine"><div class="tl-dot td-note" style="background:var(--red-dim);border-color:rgba(239,68,68,.28);">🔴</div><div class="tl-line"></div></div>
         <div class="tl-card">
-          <div class="tc-top"><div class="tc-type" style="color:var(--red);">Missed Call Alert</div><div class="tc-ts">${formatDateTime(call.createdAt)}</div></div>
+          <div class="tc-top"><div class="tc-type" style="color:var(--red);">Missed Call Alert</div><div class="tc-ts">${formatDateTime(call.startTime)}</div></div>
           <div class="tc-body">No answer. ${ai.recommended_action || 'Follow up recommended within 30 minutes.'}</div>
         </div>
       </div>` : ''}
@@ -216,7 +216,7 @@
 
     // Load notes for this call
     onSnapshot(
-      query(collection(db, 'notes'), orderBy('createdAt', 'desc')),
+      query(collection(db, 'notes'), orderBy('startTime', 'desc')),
       (snap) => {
         const notesEl = document.getElementById('notesTimeline');
         if (!notesEl) return;
@@ -277,7 +277,7 @@
     `;
 
     document.getElementById('ctxAttrib').innerHTML = `
-      <div class="ctx-r"><span class="ctx-k">Channel</span><span class="ctx-v b">${call.source || 'Direct'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Channel</span><span class="ctx-v b">${call.source_name || 'Direct'}</span></div>
       <div class="ctx-r"><span class="ctx-k">Campaign</span><span class="ctx-v" style="font-size:10px;">${call.campaign || '—'}</span></div>
       <div class="ctx-r"><span class="ctx-k">Keyword</span><span class="ctx-v" style="font-size:9px;">${call.keyword || '—'}</span></div>
       <div class="ctx-r"><span class="ctx-k">Tracking #</span><span class="ctx-v a">${call.tracking_number || '—'}</span></div>
