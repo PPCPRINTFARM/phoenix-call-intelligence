@@ -4,706 +4,312 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Phoenix Call Intelligence</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg:#0a0c10;--bg2:#0f1117;--bg3:#151820;--bg4:#1c2030;
-    --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
-    --accent:#f97316;--accent2:#fb923c;--accent-dim:rgba(249,115,22,0.13);--accent-glow:rgba(249,115,22,0.25);
-    --green:#22c55e;--green-dim:rgba(34,197,94,0.12);
-    --red:#ef4444;--red-dim:rgba(239,68,68,0.12);
-    --blue:#3b82f6;--blue-dim:rgba(59,130,246,0.12);
-    --yellow:#eab308;--yellow-dim:rgba(234,179,8,0.12);
-    --purple:#a855f7;
-    --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;
-    --radius:10px;
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+  import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+  import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+
+  const app = initializeApp({
+    apiKey: "AIzaSyAF1kBNAxhea9FQpj3keKRweLIsoVcG0eQ",
+    authDomain: "checkit-b73a7.firebaseapp.com",
+    projectId: "checkit-b73a7",
+    storageBucket: "checkit-b73a7.firebasestorage.app",
+    messagingSenderId: "571399293814",
+    appId: "1:571399293814:web:576bf3804e3389abac4857"
+  });
+
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+  let selectedCallId = null;
+  let callsCache = {};
+
+  signInAnonymously(auth).catch(console.error);
+  onAuthStateChanged(auth, user => { if (user) startListeners(); });
+
+  function startListeners() {
+    onSnapshot(query(collection(db,'calls'), orderBy('created_at','desc'), limit(50)), snap => {
+      snap.docChanges().forEach(change => {
+        const data = { id: change.doc.id, ...change.doc.data() };
+        callsCache[data.id] = data;
+        if (change.type !== 'removed') renderCallItem(data);
+        else document.getElementById('ci-'+data.id)?.remove();
+      });
+      if (!selectedCallId && Object.keys(callsCache).length > 0)
+        selectCall(Object.values(callsCache)[0].id);
+    });
+    onSnapshot(doc(db,'stats','today'), snap => { if(snap.exists()) renderStats(snap.data()); });
   }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;font-size:13px;}
 
-  /* SIDEBAR */
-  .sidebar{width:210px;min-width:210px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
-  .logo{padding:16px 14px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
-  .logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px var(--accent-glow);flex-shrink:0;}
-  .logo-text{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:-.3px;}
-  .logo-sub{font-size:9px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
-  .nav-section{padding:10px 8px 2px;}
-  .nav-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:3px;font-family:'JetBrains Mono',monospace;}
-  .nav-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;color:var(--text2);transition:all .14s;font-size:12.5px;font-weight:500;position:relative;margin-bottom:1px;}
-  .nav-item:hover{background:var(--bg3);color:var(--text);}
-  .nav-item.active{background:var(--accent-dim);color:var(--accent);}
-  .nav-item.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;}
-  .nav-icon{font-size:14px;width:16px;text-align:center;}
-  .nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:20px;font-family:'JetBrains Mono',monospace;}
-  .nav-badge.green{background:var(--green);}.nav-badge.blue{background:var(--blue);}
-  .sidebar-footer{margin-top:auto;border-top:1px solid var(--border);padding:10px 8px;}
-  .user-card{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;cursor:pointer;transition:background .14s;}
-  .user-card:hover{background:var(--bg3);}
-  .user-av{width:28px;height:28px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;color:#fff;flex-shrink:0;}
-  .user-name{font-weight:600;font-size:12px;}.user-role{font-size:10px;color:var(--text3);}
+  function renderCallItem(call) {
+    const list = document.getElementById('callList');
+    let el = document.getElementById('ci-'+call.id);
+    const isNew = !el;
+    if (isNew) { el = document.createElement('div'); el.id='ci-'+call.id; el.className='ci'; el.onclick=()=>selectCall(call.id); }
+    const ai = call.ai || {};
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+        <div style="font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:5px;">
+          <div style="width:7px;height:7px;border-radius:50%;background:${call.status==='missed'?'#ef4444':call.status==='active'?'#22c55e':'#64748b'};flex-shrink:0;"></div>
+          ${call.caller_name||call.phone||'Unknown'}
+        </div>
+        <div style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;">${getTimeAgo(call.created_at)}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
+        <span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(66,133,244,.14);color:#4285f4;">${call.source||'Direct'}</span>
+        <span style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-left:auto;">${formatDuration(call.duration||0)}</span>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${ai.summary||call.ai_summary||(call.status==='missed'?'Missed call — no answer.':'Processing...')}</div>
+      <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
+        ${(ai.lead_score||0)>=70?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(249,115,22,.13);color:#f97316;">🔥 ${ai.lead_label||'Hot Lead'}</span>`:''}
+        ${call.status==='missed'?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(239,68,68,.12);color:#ef4444;">Missed</span>`:''}
+        ${(ai.estimated_value||0)>0?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(34,197,94,.12);color:#22c55e;">$${ai.estimated_value.toLocaleString()}</span>`:''}
+      </div>`;
+    if (isNew) { list.prepend(el); el.style.background='rgba(249,115,22,0.08)'; setTimeout(()=>el.style.background='',2000); }
+  }
 
-  /* CALL LIST */
-  .list-panel{width:295px;min-width:295px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
-  .panel-hdr{padding:14px 14px 10px;border-bottom:1px solid var(--border);}
-  .panel-title{font-family:'Syne',sans-serif;font-weight:700;font-size:15px;margin-bottom:10px;}
-  .search-box{display:flex;align-items:center;gap:7px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 11px;transition:border-color .14s;}
-  .search-box:focus-within{border-color:var(--accent);}
-  .search-box input{background:none;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;flex:1;}
-  .search-box input::placeholder{color:var(--text3);}
-  .filter-row{display:flex;gap:5px;padding:8px 14px 0;flex-wrap:wrap;}
-  .chip{padding:3px 9px;border-radius:20px;font-size:11px;font-weight:500;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;transition:all .13s;font-family:'Inter',sans-serif;}
-  .chip:hover{border-color:var(--border2);color:var(--text);}
-  .chip.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
-  .call-list{flex:1;overflow-y:auto;padding:6px 0;}
-  .call-list::-webkit-scrollbar{width:3px;}
-  .call-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-  .ci{padding:11px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;position:relative;}
-  .ci:hover{background:var(--bg3);}
-  .ci.active{background:var(--bg3);border-left:2px solid var(--accent);padding-left:12px;}
-  .ci-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;}
-  .ci-name{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:5px;}
-  .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
-  .dg{background:var(--green);box-shadow:0 0 5px var(--green);}
-  .dr{background:var(--red);}
-  .db{background:var(--blue);}
-  .dy{background:var(--yellow);}
-  .dq{background:var(--text3);}
-  .ci-time{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;}
-  .ci-meta{display:flex;align-items:center;gap:6px;margin-top:3px;}
-  .src{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;}
-  .sg{background:rgba(66,133,244,.14);color:#4285f4;}
-  .so{background:var(--green-dim);color:var(--green);}
-  .sd{background:var(--accent-dim);color:var(--accent);}
-  .se{background:rgba(168,85,247,.12);color:var(--purple);}
-  .sy{background:rgba(211,47,47,.12);color:#e53935;}
-  .ci-dur{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-left:auto;}
-  .ci-snip{font-size:11px;color:var(--text2);margin-top:4px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
-  .ci-tags{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;}
-  .tag{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:500;}
-  .t-hot{background:var(--accent-dim);color:var(--accent);}
-  .t-sup{background:var(--blue-dim);color:var(--blue);}
-  .t-mis{background:var(--red-dim);color:var(--red);}
-  .t-fol{background:var(--yellow-dim);color:var(--yellow);}
-  .t-sal{background:var(--green-dim);color:var(--green);}
-  .t-spa{background:rgba(100,116,139,.14);color:var(--text3);}
-  .t-quo{background:var(--accent-dim);color:var(--accent2);}
+  window.selectCall = function(id) {
+    selectedCallId = id;
+    document.querySelectorAll('.ci').forEach(c=>c.classList.remove('active'));
+    document.getElementById('ci-'+id)?.classList.add('active');
+    const call = callsCache[id]; if (!call) return;
+    const ai = call.ai || {};
+    const ini = (call.caller_name||'UN').split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
+    document.getElementById('callerAv').textContent = ini;
+    document.getElementById('callerName').textContent = call.caller_name||call.phone||'Unknown';
+    document.getElementById('callerPhone').textContent = formatPhone(call.phone)+' · '+(call.direction||'inbound');
+    document.getElementById('tlContent').innerHTML = `
+      <div style="display:flex;gap:11px;margin-bottom:16px;">
+        <div style="display:flex;flex-direction:column;align-items:center;width:28px;flex-shrink:0;">
+          <div style="width:28px;height:28px;border-radius:8px;background:rgba(249,115,22,.13);border:1px solid rgba(249,115,22,.28);display:flex;align-items:center;justify-content:center;font-size:12px;">📞</div>
+          <div style="flex:1;width:1px;background:rgba(255,255,255,.07);margin:3px 0;"></div>
+        </div>
+        <div style="flex:1;background:#0f1117;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;font-family:'JetBrains Mono',monospace;color:#f97316;">${call.direction==='inbound'?'Inbound':'Outbound'} Call · ${call.source||'Direct'}</div>
+            <div style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;">${formatDateTime(call.created_at)} · ${formatDuration(call.duration||0)}</div>
+          </div>
+          <div style="font-size:12.5px;color:#94a3b8;line-height:1.6;">
+            ${call.caller_name?`<strong style="color:#f1f5f9;">${call.caller_name}</strong> called`:'Call received'}
+            ${call.agent?`. Answered by <strong style="color:#f1f5f9;">${call.agent}</strong>.`:call.status==='missed'?' — <strong style="color:#ef4444;">Not answered.</strong>':'.'}
+          </div>
+          <div style="display:flex;background:#151820;border-radius:8px;margin-top:9px;overflow:hidden;">
+            <div style="padding:9px 12px;flex:1;border-right:1px solid rgba(255,255,255,.07);">
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Duration</div>
+              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${(call.duration||0)>60?'#22c55e':'#ef4444'};">${formatDuration(call.duration||0)}</div>
+            </div>
+            <div style="padding:9px 12px;flex:1;border-right:1px solid rgba(255,255,255,.07);">
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Lead Score</div>
+              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#f97316;">${ai.lead_score||'—'}/100</div>
+            </div>
+            <div style="padding:9px 12px;flex:1;">
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Sentiment</div>
+              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;">${ai.sentiment||'—'}</div>
+            </div>
+          </div>
+          ${ai.summary?`<div style="background:linear-gradient(135deg,rgba(249,115,22,.06),rgba(59,130,246,.05));border:1px solid rgba(249,115,22,.18);border-radius:8px;padding:10px 12px;margin-top:9px;">
+            <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:#f97316;font-family:'JetBrains Mono',monospace;font-weight:700;margin-bottom:4px;">✦ AI Summary</div>
+            <div style="font-size:12px;color:#94a3b8;line-height:1.65;">${ai.summary}</div>
+          </div>`:''}
+          ${(ai.keywords||[]).length?`<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px;">${(ai.keywords||[]).map(k=>`<span style="padding:2px 7px;background:rgba(249,115,22,.13);border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace;color:#f97316;border:1px solid rgba(249,115,22,.28);">${k}</span>`).join('')}</div>`:''}
+        </div>
+      </div>`;
+    document.getElementById('ctxContact').innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Name</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.caller_name||'Unknown'}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Phone</span><span style="font-size:11px;color:#f97316;font-family:'JetBrains Mono',monospace;">${formatPhone(call.phone)}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Source</span><span style="font-size:11px;color:#3b82f6;font-family:'JetBrains Mono',monospace;">${call.source||'Direct'}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Campaign</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.campaign||'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span style="font-size:11px;color:#64748b;">Agent</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.agent||'—'}</span></div>`;
+    document.getElementById('ctxRec').innerHTML = `
+      <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-bottom:9px;">${ai.recommended_action||'Review call and follow up.'}</div>
+      ${ai.recommended_product?`<div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">Product: <strong style="color:#f1f5f9;">${ai.recommended_product}</strong></div>`:''}
+      ${(ai.estimated_value||0)>0?`<div style="font-size:12px;color:#22c55e;font-weight:700;margin-bottom:8px;">Est. $${ai.estimated_value.toLocaleString()}</div>`:''}`;
+  };
 
-  /* MAIN */
-  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-  .stats-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;overflow-x:auto;}
-  .stats-bar::-webkit-scrollbar{height:0;}
-  .sc{padding:10px 16px;border-right:1px solid var(--border);min-width:100px;flex-shrink:0;}
-  .sv{font-family:'Syne',sans-serif;font-weight:800;font-size:19px;letter-spacing:-.4px;line-height:1;margin-bottom:2px;display:flex;align-items:baseline;gap:4px;}
-  .sl{font-size:9.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-family:'JetBrains Mono',monospace;}
-  .up{color:var(--green);font-size:10px;font-weight:700;}
-  .dn{color:var(--red);font-size:10px;font-weight:700;}
+  window.saveNote = async function() {
+    const body = document.querySelector('.compose-inp').value.trim();
+    if (!body||!selectedCallId) return;
+    await addDoc(collection(db,'notes'),{call_id:selectedCallId,body,author:'Glen',created_at:serverTimestamp()});
+    document.querySelector('.compose-inp').value='';
+  };
 
-  .det-hdr{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:13px;background:var(--bg2);flex-shrink:0;}
-  .cav{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--accent),#dc2626);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:17px;flex-shrink:0;box-shadow:0 4px 14px rgba(249,115,22,.28);}
-  .cname{font-family:'Syne',sans-serif;font-weight:700;font-size:17px;letter-spacing:-.3px;display:flex;align-items:center;gap:8px;}
-  .cphone{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text2);margin-top:2px;}
-  .cpills{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;}
-  .pill{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;}
-  .ph{background:var(--accent-dim);color:var(--accent);}
-  .pn{background:var(--green-dim);color:var(--green);}
-  .ps{background:var(--blue-dim);color:var(--blue);}
-  .live-chip{display:inline-flex;align-items:center;gap:4px;background:var(--green-dim);border:1px solid rgba(34,197,94,.3);color:var(--green);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;}
-  .ldot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.6s infinite;}
-  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
-  .hdr-acts{display:flex;gap:6px;align-items:center;}
-  .btn{padding:6px 13px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:'Inter',sans-serif;transition:all .14s;display:flex;align-items:center;gap:5px;}
-  .btn-p{background:var(--accent);color:#fff;box-shadow:0 2px 10px var(--accent-glow);}
-  .btn-p:hover{background:var(--accent2);transform:translateY(-1px);}
-  .btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);}
-  .btn-g:hover{background:var(--bg4);color:var(--text);}
-  .bico{width:30px;height:30px;padding:0;justify-content:center;font-size:14px;}
+  function renderStats(s) {
+    document.getElementById('statCalls').textContent = s.total_calls||0;
+    document.getElementById('statRevenue').textContent = '$'+(s.revenue_today||0).toLocaleString();
+    document.getElementById('statDuration').textContent = s.avg_duration_display||'0:00';
+    document.getElementById('statLeadRate').textContent = (s.lead_rate||0)+'%';
+    document.getElementById('statMissed').textContent = s.missed_calls||0;
+  }
 
-  .tab-bar{display:flex;border-bottom:1px solid var(--border);padding:0 18px;background:var(--bg2);flex-shrink:0;}
-  .tab{padding:9px 13px;font-size:12px;font-weight:600;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .14s;white-space:nowrap;}
-  .tab:hover{color:var(--text2);}
-  .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
-
-  .det-body{flex:1;display:flex;overflow:hidden;}
-  .tl-col{flex:1;overflow-y:auto;padding:16px 18px;}
-  .tl-col::-webkit-scrollbar{width:3px;}
-  .tl-col::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-
-  .sec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:11px;display:flex;align-items:center;gap:8px;}
-  .sec-t::after{content:'';flex:1;height:1px;background:var(--border);}
-
-  .tl-item{display:flex;gap:11px;margin-bottom:16px;animation:fadeUp .3s ease both;}
-  .tl-item:nth-child(1){animation-delay:.04s}.tl-item:nth-child(2){animation-delay:.09s}
-  .tl-item:nth-child(3){animation-delay:.14s}.tl-item:nth-child(4){animation-delay:.19s}
-  @keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
-  .tl-spine{display:flex;flex-direction:column;align-items:center;width:28px;flex-shrink:0;}
-  .tl-dot{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
-  .td-call{background:var(--accent-dim);border:1px solid rgba(249,115,22,.28);}
-  .td-sms{background:var(--blue-dim);border:1px solid rgba(59,130,246,.28);}
-  .td-note{background:var(--yellow-dim);border:1px solid rgba(234,179,8,.28);}
-  .td-web{background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.28);}
-  .tl-line{flex:1;width:1px;background:var(--border);margin:3px 0;}
-
-  .tl-card{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;transition:border-color .14s;}
-  .tl-card:hover{border-color:var(--border2);}
-  .tc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
-  .tc-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;font-family:'JetBrains Mono',monospace;}
-  .tt-call{color:var(--accent);}.tt-sms{color:var(--blue);}.tt-note{color:var(--yellow);}.tt-web{color:var(--purple);}
-  .tc-ts{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;}
-  .tc-body{font-size:12.5px;color:var(--text2);line-height:1.6;}
-  .tc-body strong{color:var(--text);}
-
-  .cm-row{display:flex;gap:0;background:var(--bg3);border-radius:8px;margin-top:9px;overflow:hidden;}
-  .cm{padding:9px 12px;flex:1;border-right:1px solid var(--border);}
-  .cm:last-child{border-right:none;}
-  .cm-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:3px;}
-  .cm-val{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;}
-  .waveform{display:flex;align-items:center;gap:2px;height:20px;}
-  .wv{width:3px;border-radius:2px;background:var(--accent);opacity:.55;}
-
-  .ai-box{background:linear-gradient(135deg,rgba(249,115,22,.06),rgba(59,130,246,.05));border:1px solid rgba(249,115,22,.18);border-radius:8px;padding:10px 12px;margin-top:9px;}
-  .ai-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;font-weight:700;margin-bottom:4px;}
-  .ai-text{font-size:12px;color:var(--text2);line-height:1.65;}
-  .kw-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px;}
-  .kw{padding:2px 7px;background:var(--bg4);border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--text2);border:1px solid var(--border);}
-  .kw.hot{background:var(--accent-dim);border-color:rgba(249,115,22,.28);color:var(--accent);}
-
-  .sms-thread{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
-  .sms-out{max-width:82%;align-self:flex-end;background:var(--accent);color:#fff;padding:7px 11px;border-radius:11px 11px 3px 11px;font-size:12px;line-height:1.5;}
-  .sms-in{max-width:82%;align-self:flex-start;background:var(--bg4);color:var(--text);padding:7px 11px;border-radius:11px 11px 11px 3px;font-size:12px;line-height:1.5;}
-
-  .tl-div{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:9.5px;font-family:'JetBrains Mono',monospace;letter-spacing:1px;margin:2px 0 14px;}
-  .tl-div::before,.tl-div::after{content:'';flex:1;height:1px;background:var(--border);}
-
-  .stags{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
-  .stag{font-size:10px;background:var(--bg4);padding:3px 8px;border-radius:4px;color:var(--text2);font-family:'JetBrains Mono',monospace;}
-  .stag.b{color:var(--blue);}
-
-  /* COMPOSE */
-  .compose-bar{padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
-  .ctabs{display:flex;gap:5px;margin-bottom:7px;}
-  .ctab{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;font-family:'Inter',sans-serif;transition:all .14s;}
-  .ctab.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
-  .ctab:hover:not(.active){background:var(--bg3);color:var(--text);}
-  .compose-inp{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;outline:none;height:56px;transition:border-color .14s;}
-  .compose-inp::placeholder{color:var(--text3);}
-  .compose-inp:focus{border-color:var(--accent);}
-  .cf{display:flex;align-items:center;justify-content:space-between;margin-top:6px;}
-  .cf-hint{font-size:10.5px;color:var(--text3);}
-
-  /* CTX PANEL */
-  .ctx{width:255px;min-width:255px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:13px;}
-  .ctx::-webkit-scrollbar{width:3px;}
-  .ctx::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-  .ctx-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:9px;}
-  .ctx-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:8px;}
-  .ctx-r{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;gap:6px;}
-  .ctx-k{font-size:11px;color:var(--text3);flex-shrink:0;}
-  .ctx-v{font-size:11px;color:var(--text);font-weight:500;text-align:right;font-family:'JetBrains Mono',monospace;}
-  .ctx-v.g{color:var(--green);}.ctx-v.a{color:var(--accent);}.ctx-v.b{color:var(--blue);}.ctx-v.p{color:var(--purple);}
-
-  .score-row{display:flex;align-items:center;gap:10px;padding:5px 0 9px;}
-  .score-ring{position:relative;width:48px;height:48px;border-radius:50%;flex-shrink:0;background:conic-gradient(var(--green) 0% 94%,var(--bg4) 94%);display:flex;align-items:center;justify-content:center;}
-  .score-ring::before{content:'';position:absolute;inset:4px;border-radius:50%;background:var(--bg3);}
-  .score-num{position:relative;z-index:1;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;color:var(--green);}
-  .score-lbl{font-weight:700;font-size:13px;color:var(--text);margin-bottom:2px;}
-  .score-sub{font-size:10px;color:var(--text2);line-height:1.4;}
-  .prog-row{margin-bottom:6px;}
-  .prog-lr{display:flex;justify-content:space-between;margin-bottom:3px;}
-  .prog-l{font-size:10px;color:var(--text3);}
-  .prog-p{font-size:10px;color:var(--text2);font-family:'JetBrains Mono',monospace;}
-  .prog-track{height:4px;background:var(--bg4);border-radius:4px;overflow:hidden;}
-  .prog-fill{height:100%;border-radius:4px;}
-
-  .ai-rec{background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(249,115,22,.02));border:1px solid rgba(249,115,22,.25);border-radius:var(--radius);padding:12px;margin-bottom:9px;}
-  .ai-rec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;margin-bottom:6px;}
-  .ai-rec-txt{font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:9px;}
-
-  .rule-r{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);}
-  .rule-r:last-child{border-bottom:none;}
-  .rdot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
-
-  /* TOOLTIP */
-  [data-tip]{position:relative;}
-  [data-tip]::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:var(--bg4);border:1px solid var(--border2);color:var(--text);padding:3px 8px;border-radius:5px;font-size:11px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .14s;z-index:100;}
-  [data-tip]:hover::after{opacity:1;}
-
-  /* TRANSCRIPT / ATTRIBUTION / COACH TABS */
-  .tab-content{display:none;}
-  .tab-content.active{display:block;}
-  .coach-item{display:flex;gap:8px;font-size:12.5px;color:var(--text2);margin-bottom:7px;}
-  .coach-ico{flex-shrink:0;}
+  function formatDuration(s){if(!s)return'0:00';return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0');}
+  function formatPhone(p){if(!p)return'—';const d=p.replace(/\D/g,'');if(d.length===11)return`+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;if(d.length===10)return`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;return p;}
+  function formatDateTime(ts){if(!ts)return'';const d=ts.toDate?ts.toDate():new Date(ts);return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
+  function getTimeAgo(ts){if(!ts)return'';const d=ts.toDate?ts.toDate():new Date(ts);const m=Math.floor((Date.now()-d.getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';if(m<1440)return Math.floor(m/60)+'h ago';return Math.floor(m/1440)+'d ago';}
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0c10;--bg2:#0f1117;--bg3:#151820;--bg4:#1c2030;--border:rgba(255,255,255,0.07);--accent:#f97316;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;font-size:13px;}
+.sidebar{width:210px;min-width:210px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
+.logo{padding:16px 14px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+.logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(249,115,22,.25);flex-shrink:0;}
+.logo-text{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;}
+.logo-sub{font-size:9px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
+.nav-section{padding:10px 8px 2px;}
+.nav-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:3px;font-family:'JetBrains Mono',monospace;}
+.nav-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;color:var(--text2);font-size:12.5px;font-weight:500;margin-bottom:1px;transition:all .14s;position:relative;}
+.nav-item:hover{background:var(--bg3);color:var(--text);}
+.nav-item.active{background:rgba(249,115,22,.13);color:var(--accent);}
+.nav-item.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;}
+.nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:20px;}
+.nav-badge.green{background:var(--green);}
+.sidebar-footer{margin-top:auto;border-top:1px solid var(--border);padding:10px 8px;}
+.user-card{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;cursor:pointer;}
+.list-panel{width:295px;min-width:295px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
+.panel-hdr{padding:14px 14px 10px;border-bottom:1px solid var(--border);}
+.panel-title{font-family:'Syne',sans-serif;font-weight:700;font-size:15px;margin-bottom:10px;}
+.search-box{display:flex;align-items:center;gap:7px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 11px;}
+.search-box input{background:none;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;flex:1;}
+.search-box input::placeholder{color:var(--text3);}
+.call-list{flex:1;overflow-y:auto;padding:6px 0;}
+.call-list::-webkit-scrollbar{width:3px;}
+.call-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.ci{padding:11px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;}
+.ci:hover{background:var(--bg3);}
+.ci.active{background:var(--bg3);border-left:2px solid var(--accent);padding-left:12px;}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.stats-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;overflow-x:auto;}
+.sc{padding:10px 16px;border-right:1px solid var(--border);min-width:100px;flex-shrink:0;}
+.sv{font-family:'Syne',sans-serif;font-weight:800;font-size:19px;letter-spacing:-.4px;line-height:1;margin-bottom:2px;}
+.sl{font-size:9.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-family:'JetBrains Mono',monospace;}
+.det-hdr{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:13px;background:var(--bg2);flex-shrink:0;}
+.cav{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--accent),#dc2626);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:17px;flex-shrink:0;}
+.cname{font-family:'Syne',sans-serif;font-weight:700;font-size:17px;letter-spacing:-.3px;}
+.cphone{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text2);margin-top:2px;}
+.btn{padding:6px 13px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:5px;transition:all .14s;}
+.btn-p{background:var(--accent);color:#fff;}
+.btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);}
+.det-body{flex:1;display:flex;overflow:hidden;}
+.tl-col{flex:1;overflow-y:auto;padding:16px 18px;}
+.tl-col::-webkit-scrollbar{width:3px;}
+.tl-col::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.ctx{width:255px;min-width:255px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:13px;}
+.ctx-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:9px;}
+.ctx-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:8px;}
+.ai-rec{background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(249,115,22,.02));border:1px solid rgba(249,115,22,.25);border-radius:10px;padding:12px;margin-bottom:9px;}
+.ai-rec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;margin-bottom:6px;}
+.compose-bar{padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
+.ctabs{display:flex;gap:5px;margin-bottom:7px;}
+.ctab{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;font-family:'Inter',sans-serif;transition:all .14s;}
+.ctab.active{background:rgba(249,115,22,.13);border-color:var(--accent);color:var(--accent);}
+.compose-inp{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;outline:none;height:56px;}
+.compose-inp:focus{border-color:var(--accent);}
+.compose-inp::placeholder{color:var(--text3);}
+.cf{display:flex;align-items:center;justify-content:space-between;margin-top:6px;}
+.ldot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.6s infinite;display:inline-block;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
+.live-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text3);}
+.spinner{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
-
-<!-- SIDEBAR -->
 <nav class="sidebar">
   <div class="logo">
     <div class="logo-icon">🔥</div>
-    <div>
-      <div class="logo-text">Phoenix</div>
-      <div class="logo-sub">Call Intelligence</div>
-    </div>
+    <div><div class="logo-text">Phoenix</div><div class="logo-sub">Call Intelligence</div></div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Inbox</div>
-    <div class="nav-item active" onclick="navClick(this)"><span class="nav-icon">📞</span> All Calls <span class="nav-badge">12</span></div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🔴</span> Missed <span class="nav-badge">4</span></div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">⚡</span> Live Now <span class="nav-badge green">2</span></div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🗓</span> Scheduled <span class="nav-badge blue">3</span></div>
+    <div class="nav-item active"><span>📞</span> All Calls <span class="nav-badge" id="badgeCalls">—</span></div>
+    <div class="nav-item"><span>🔴</span> Missed <span class="nav-badge" id="badgeMissed">—</span></div>
+    <div class="nav-item"><span>⚡</span> Live Now <span class="nav-badge green">0</span></div>
+    <div class="nav-item"><span>✅</span> Follow-Ups</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Work</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">👥</span> Contacts</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🛒</span> Orders</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">💬</span> SMS Threads <span class="nav-badge">7</span></div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">✅</span> Follow-Ups <span class="nav-badge">5</span></div>
+    <div class="nav-item"><span>👥</span> Contacts</div>
+    <div class="nav-item"><span>🛒</span> Orders</div>
+    <div class="nav-item"><span>💬</span> SMS Threads</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Intelligence</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">📊</span> Analytics</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🎯</span> Attribution</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🤖</span> AI Insights</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🔔</span> Alerts</div>
-  </div>
-  <div class="nav-section">
-    <div class="nav-label">Setup</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">📡</span> Tracking Nums</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">🔀</span> Routing Rules</div>
-    <div class="nav-item" onclick="navClick(this)"><span class="nav-icon">⚙️</span> Settings</div>
+    <div class="nav-item"><span>📊</span> Analytics</div>
+    <div class="nav-item"><span>🎯</span> Attribution</div>
+    <div class="nav-item"><span>🤖</span> AI Insights</div>
   </div>
   <div class="sidebar-footer">
     <div class="user-card">
-      <div class="user-av">G</div>
-      <div><div class="user-name">Glen F.</div><div class="user-role">Admin · Phoenix PPC</div></div>
+      <div style="width:28px;height:28px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;color:#fff;">G</div>
+      <div><div style="font-weight:600;font-size:12px;">Glen F.</div><div style="font-size:10px;color:var(--text3);">Admin · Phoenix PPC</div></div>
     </div>
   </div>
 </nav>
 
-<!-- CALL LIST -->
 <div class="list-panel">
   <div class="panel-hdr">
-    <div class="panel-title">Call Intelligence</div>
-    <div class="search-box">
-      <span style="color:var(--text3);">🔍</span>
-      <input type="text" placeholder="Search calls, contacts, transcripts…">
-    </div>
+    <div class="panel-title">Call Intelligence <div class="live-chip" style="display:inline-flex;"><div class="ldot"></div>LIVE</div></div>
+    <div class="search-box"><span style="color:var(--text3);">🔍</span><input type="text" placeholder="Search calls, contacts…"></div>
   </div>
-  <div class="filter-row">
-    <div class="chip active" onclick="setChip(this)">All</div>
-    <div class="chip" onclick="setChip(this)">Inbound</div>
-    <div class="chip" onclick="setChip(this)">Missed</div>
-    <div class="chip" onclick="setChip(this)">Leads</div>
-  </div>
-  <div class="call-list">
-    <div class="ci active" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dg"></div>Mike Thornton</div><div class="ci-time">2m ago</div></div>
-      <div class="ci-meta"><span class="src sg">Google Ads</span><span class="ci-dur">4:32</span></div>
-      <div class="ci-snip">"Looking for a 30HP phase converter for my machine shop. Need it fast."</div>
-      <div class="ci-tags"><span class="tag t-hot">🔥 Hot Lead</span><span class="tag t-sal">$2,400+</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dr"></div>(602) 555-0194</div><div class="ci-time">18m ago</div></div>
-      <div class="ci-meta"><span class="src so">Organic</span><span class="ci-dur">0:00</span></div>
-      <div class="ci-snip">Missed call — no voicemail. First-time caller from Phoenix area.</div>
-      <div class="ci-tags"><span class="tag t-mis">Missed</span><span class="tag t-fol">Follow Up</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot db"></div>Sandra K. (Repeat)</div><div class="ci-time">1h ago</div></div>
-      <div class="ci-meta"><span class="src sd">Direct</span><span class="ci-dur">8:15</span></div>
-      <div class="ci-snip">Support re: NL-30 tripping. Walked through diagnostics. Resolved.</div>
-      <div class="ci-tags"><span class="tag t-sup">Support ✓ Resolved</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dy"></div>Jim Dalton</div><div class="ci-time">3h ago</div></div>
-      <div class="ci-meta"><span class="src se">Email Campgn</span><span class="ci-dur">6:44</span></div>
-      <div class="ci-snip">50HP NLTA inquiry. Requested freight quote. Sent via email follow-up.</div>
-      <div class="ci-tags"><span class="tag t-quo">Quoted</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dq"></div>Carl Reyes</div><div class="ci-time">Yesterday</div></div>
-      <div class="ci-meta"><span class="src sy">Yelp</span><span class="ci-dur">2:10</span></div>
-      <div class="ci-snip">PH vs NL comparison for woodshop. Sent product guide link.</div>
-      <div class="ci-tags"><span class="tag t-fol">Needs Follow-Up</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dq"></div>(888) 555-0022</div><div class="ci-time">Yesterday</div></div>
-      <div class="ci-meta"><span class="src so">Organic</span><span class="ci-dur">0:18</span></div>
-      <div class="ci-snip">Very short call. AI flagged as likely spam — no actionable content.</div>
-      <div class="ci-tags"><span class="tag t-spa">Spam</span></div>
-    </div>
-    <div class="ci" onclick="selCall(this)">
-      <div class="ci-top"><div class="ci-name"><div class="dot dq"></div>Donna Wu</div><div class="ci-time">2 days ago</div></div>
-      <div class="ci-meta"><span class="src sg">Google Ads</span><span class="ci-dur">11:02</span></div>
-      <div class="ci-snip">GP50 purchased. Deal closed on call. Payment confirmed.</div>
-      <div class="ci-tags"><span class="tag t-sal">Closed · $3,890</span></div>
-    </div>
+  <div class="call-list" id="callList">
+    <div class="loading"><div class="spinner"></div><div style="font-size:12px;">Connecting to Firebase…</div></div>
   </div>
 </div>
 
-<!-- MAIN -->
 <div class="main">
-
-  <!-- Stats bar -->
   <div class="stats-bar">
-    <div class="sc"><div class="sv">47 <span class="up">↑8%</span></div><div class="sl">Calls Today</div></div>
-    <div class="sc"><div class="sv" style="color:var(--green);">$14,220</div><div class="sl">Revenue Attr.</div></div>
-    <div class="sc"><div class="sv" style="color:var(--accent);">4:18</div><div class="sl">Avg Duration</div></div>
-    <div class="sc"><div class="sv">76% <span class="up">↑4%</span></div><div class="sl">Lead Rate</div></div>
-    <div class="sc"><div class="sv" style="color:var(--red);">4</div><div class="sl">Missed Today</div></div>
-    <div class="sc">
-      <div class="sv" style="color:var(--green);gap:6px;">2 <div class="live-chip" style="font-size:9px;padding:2px 6px;"><div class="ldot"></div>LIVE</div></div>
-      <div class="sl">Active Calls</div>
-    </div>
-    <div class="sc"><div class="sv">$18.40</div><div class="sl">Avg Ad CPC</div></div>
+    <div class="sc"><div class="sv" id="statCalls">—</div><div class="sl">Calls Today</div></div>
+    <div class="sc"><div class="sv" style="color:var(--green);" id="statRevenue">—</div><div class="sl">Revenue Attr.</div></div>
+    <div class="sc"><div class="sv" style="color:var(--accent);" id="statDuration">—</div><div class="sl">Avg Duration</div></div>
+    <div class="sc"><div class="sv" id="statLeadRate">—</div><div class="sl">Lead Rate</div></div>
+    <div class="sc"><div class="sv" style="color:var(--red);" id="statMissed">—</div><div class="sl">Missed Today</div></div>
   </div>
-
-  <!-- Detail header -->
   <div class="det-hdr">
-    <div class="cav">MT</div>
+    <div class="cav" id="callerAv">—</div>
     <div style="flex:1;">
-      <div class="cname">Mike Thornton <div class="live-chip"><div class="ldot"></div>Just Called</div></div>
-      <div class="cphone">+1 (480) 555-0147 · Chandler, AZ</div>
-      <div class="cpills">
-        <span class="pill ph">🔥 Hot Lead</span>
-        <span class="pill pn">✓ 1st Time Caller</span>
-        <span class="pill ps">Google Ads · 30HP</span>
-      </div>
+      <div class="cname" id="callerName">Select a call</div>
+      <div class="cphone" id="callerPhone">—</div>
     </div>
-    <div class="hdr-acts">
-      <button class="btn btn-g bico" data-tip="Send SMS">💬</button>
-      <button class="btn btn-g bico" data-tip="Send Email">✉️</button>
-      <button class="btn btn-g bico" data-tip="Add Task">✅</button>
-      <button class="btn btn-g bico" data-tip="Flag">🚩</button>
+    <div style="display:flex;gap:6px;">
+      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">💬</button>
+      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">✉️</button>
+      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">✅</button>
       <button class="btn btn-p">📞 Call Back</button>
     </div>
   </div>
-
-  <!-- Tabs -->
-  <div class="tab-bar">
-    <div class="tab active" onclick="setTab(this,'tl')">Timeline</div>
-    <div class="tab" onclick="setTab(this,'tr')">Transcript</div>
-    <div class="tab" onclick="setTab(this,'at')">Attribution</div>
-    <div class="tab" onclick="setTab(this,'co')">AI Coach</div>
-    <div class="tab" onclick="setTab(this,'hi')">All History</div>
-  </div>
-
   <div class="det-body">
-
-    <!-- ═══ TAB CONTENT COL ═══ -->
     <div class="tl-col">
-
-      <!-- TIMELINE -->
-      <div id="tl" class="tab-content active">
-        <div class="sec-t">Customer Timeline</div>
-
-        <div class="tl-item">
-          <div class="tl-spine"><div class="tl-dot td-call">📞</div><div class="tl-line"></div></div>
-          <div class="tl-card">
-            <div class="tc-top"><div class="tc-type tt-call">Inbound Call · Google Ads</div><div class="tc-ts">Today 2:42 PM · 4m 32s</div></div>
-            <div class="tc-body"><strong>Mike</strong> called the Google Ads tracking number after clicking a <strong>"30HP phase converter"</strong> ad. Answered by <strong>Danny</strong>. Full recording available.</div>
-            <div class="cm-row">
-              <div class="cm"><div class="cm-lbl">Duration</div><div class="cm-val" style="color:var(--green);">4:32</div></div>
-              <div class="cm"><div class="cm-lbl">Answered By</div><div class="cm-val">Danny</div></div>
-              <div class="cm"><div class="cm-lbl">Lead Score</div><div class="cm-val" style="color:var(--accent);">94/100</div></div>
-              <div class="cm"><div class="cm-lbl">Recording</div><div class="cm-val"><div class="waveform" id="wf"></div></div></div>
-            </div>
-            <div class="ai-box">
-              <div class="ai-lbl">✦ AI Summary</div>
-              <div class="ai-text">Machine shop owner in Chandler, AZ needs a <strong style="color:var(--text);">30HP rotary phase converter</strong> within 2 weeks. Competitor quoted $2,100. Asked about lifetime warranty &amp; lead time. Strong buy signal — recommend <strong style="color:var(--text);">GP30NL + free shipping offer.</strong></div>
-            </div>
-            <div class="kw-list">
-              <span class="kw hot">30HP</span><span class="kw hot">machine shop</span><span class="kw hot">urgent</span>
-              <span class="kw hot">warranty</span><span class="kw">competitor</span><span class="kw">lead time</span>
-              <span class="kw">Chandler AZ</span><span class="kw">soft-start</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="tl-item">
-          <div class="tl-spine"><div class="tl-dot td-sms">💬</div><div class="tl-line"></div></div>
-          <div class="tl-card">
-            <div class="tc-top"><div class="tc-type tt-sms">Post-Call SMS · Auto via OpenPhone</div><div class="tc-ts">Today 2:51 PM · Delivered ✓✓</div></div>
-            <div class="tc-body">N8N automation triggered after call ended (duration &gt;3m, lead score &gt;80).</div>
-            <div class="sms-thread">
-              <div class="sms-out">Hi Mike! Thanks for calling Phoenix Phase Converters. Getting your 30HP quote together now — sending within 30 mins. Any questions, text back! — Danny</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="tl-item">
-          <div class="tl-spine"><div class="tl-dot td-note">📝</div><div class="tl-line"></div></div>
-          <div class="tl-card">
-            <div class="tc-top"><div class="tc-type tt-note">Internal Note · Danny</div><div class="tc-ts">Today 2:53 PM</div></div>
-            <div class="tc-body">Needs soft-start. Competitor = Phase-O-Matic at $2,100. Counter with GP30NL lifetime warranty + free ship. He said he'll order today if price is close. <strong>Follow up by 5 PM.</strong></div>
-          </div>
-        </div>
-
-        <div class="tl-div">NO PRIOR HISTORY · FIRST TIME CALLER</div>
-
-        <div class="tl-item">
-          <div class="tl-spine"><div class="tl-dot td-web">🌐</div></div>
-          <div class="tl-card">
-            <div class="tc-top"><div class="tc-type tt-web">Web Session · Pre-Call</div><div class="tc-ts">Today 2:38 PM</div></div>
-            <div class="tc-body">Arrived via Google Ads. Viewed <strong>GP30NL product page</strong> (2m 34s), then Sizing Guide &amp; 3-Phase FAQ. Clicked tracking number → triggered this call.</div>
-            <div class="stags">
-              <span class="stag">Session: 6m 12s</span>
-              <span class="stag">3 Pages</span>
-              <span class="stag">Desktop · Chrome</span>
-              <span class="stag b">KW: "30hp rotary phase converter"</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TRANSCRIPT -->
-      <div id="tr" class="tab-content">
-        <div class="sec-t">Full Transcript · 4m 32s</div>
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;line-height:2.1;font-size:12.5px;">
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:00</span><span style="color:var(--accent);font-weight:600;">Danny:</span> <span style="color:var(--text2);">Thank you for calling Phoenix Phase Converters, this is Danny, how can I help you today?</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:07</span><span style="color:var(--blue);font-weight:600;">Mike:</span> <span style="color:var(--text2);">Hey Danny, yeah I'm looking at getting a 30 horsepower rotary phase converter for my machine shop out here in Chandler. I've been looking around a bit online.</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:18</span><span style="color:var(--accent);font-weight:600;">Danny:</span> <span style="color:var(--text2);">Great, you're in the right place! What kind of equipment are you running — do you know if it's a hard-start or would you need soft-start capability?</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:26</span><span style="color:var(--blue);font-weight:600;">Mike:</span> <span style="color:var(--text2);">I've got a CNC lathe and a couple older mills. Pretty sure I need soft-start, the lathe kicks hard on startup.</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:34</span><span style="color:var(--accent);font-weight:600;">Danny:</span> <span style="color:var(--text2);">Perfect, our GP30NL is exactly what you want — built-in soft-start and covered by our lifetime warranty, which is unmatched in the industry.</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:46</span><span style="color:var(--blue);font-weight:600;">Mike:</span> <span style="color:var(--text2);">Lifetime warranty, seriously? I was looking at Phase-O-Matic — they quoted me around $2,100. What are you guys at?</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">00:55</span><span style="color:var(--accent);font-weight:600;">Danny:</span> <span style="color:var(--text2);">We're right around $2,395 with free shipping. That lifetime warranty adds serious value — nobody else does that at this price point. Made in the USA too.</span></div>
-          <div><span style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px;margin-right:10px;">01:08</span><span style="color:var(--blue);font-weight:600;">Mike:</span> <span style="color:var(--text2);">Made in the USA — yeah, that matters to me. How fast can you ship to Arizona?</span></div>
-          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--text3);font-size:11px;font-family:'JetBrains Mono',monospace;">… transcript continues · 3m 24s remaining · Full AI transcript available</div>
-        </div>
-      </div>
-
-      <!-- ATTRIBUTION -->
-      <div id="at" class="tab-content">
-        <div class="sec-t">Call Attribution</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:14px;">
-          <div class="tl-card">
-            <div class="tc-type tt-call" style="margin-bottom:7px;">Traffic Source</div>
-            <div style="font-size:20px;font-family:'Syne',sans-serif;font-weight:800;color:#4285f4;margin-bottom:5px;">Google Ads</div>
-            <div style="font-size:11px;color:var(--text2);line-height:1.8;">Campaign: <strong style="color:var(--text);">30HP Converters</strong><br>Ad Group: Rotary Phase<br>Keyword: <em>30hp rotary phase converter</em><br>Match: <strong style="color:var(--text);">Exact</strong></div>
-          </div>
-          <div class="tl-card">
-            <div class="tc-type" style="color:var(--green);margin-bottom:7px;">Financial Impact</div>
-            <div style="font-size:20px;font-family:'Syne',sans-serif;font-weight:800;color:var(--green);margin-bottom:5px;">$2,395 est.</div>
-            <div style="font-size:11px;color:var(--text2);line-height:1.8;">Ad spend: <strong style="color:var(--text);">~$18.40</strong><br>Est. ROAS: <strong style="color:var(--green);">130×</strong><br>CPL avg: $12.80<br>Status: <strong style="color:var(--yellow);">Pending close</strong></div>
-          </div>
-        </div>
-        <div class="sec-t">Session Journey</div>
-        <div class="tl-card">
-          <div style="display:flex;align-items:center;gap:0;">
-            <div style="text-align:center;flex:1;">
-              <div style="width:30px;height:30px;border-radius:8px;background:#4285f4;display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto 5px;">G</div>
-              <div style="font-size:10px;color:var(--text2);">Google Ad</div><div style="font-size:9px;color:var(--text3);">2:36 PM</div>
-            </div>
-            <div style="flex:1;height:1px;background:var(--border);"></div>
-            <div style="text-align:center;flex:1;">
-              <div style="width:30px;height:30px;border-radius:8px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto 5px;">🛍</div>
-              <div style="font-size:10px;color:var(--text2);">GP30NL Page</div><div style="font-size:9px;color:var(--text3);">2:37 PM</div>
-            </div>
-            <div style="flex:1;height:1px;background:var(--border);"></div>
-            <div style="text-align:center;flex:1;">
-              <div style="width:30px;height:30px;border-radius:8px;background:var(--blue-dim);display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto 5px;">📋</div>
-              <div style="font-size:10px;color:var(--text2);">Sizing Guide</div><div style="font-size:9px;color:var(--text3);">2:39 PM</div>
-            </div>
-            <div style="flex:1;height:1px;background:var(--border);"></div>
-            <div style="text-align:center;flex:1;">
-              <div style="width:30px;height:30px;border-radius:8px;background:var(--green-dim);display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto 5px;">📞</div>
-              <div style="font-size:10px;color:var(--green);">Called</div><div style="font-size:9px;color:var(--text3);">2:42 PM</div>
-            </div>
-          </div>
-        </div>
-        <div class="sec-t" style="margin-top:14px;">Tracking Number</div>
-        <div class="tl-card">
-          <div style="display:flex;flex-wrap:wrap;gap:14px;">
-            <div><div class="cm-lbl">Tracking #</div><div style="font-size:14px;font-family:'JetBrains Mono',monospace;color:var(--accent);font-weight:700;">+1 (602) 555-0300</div></div>
-            <div><div class="cm-lbl">Pool</div><div style="font-size:12px;font-family:'JetBrains Mono',monospace;">Google Ads Pool A</div></div>
-            <div><div class="cm-lbl">Forwarded To</div><div style="font-size:12px;font-family:'JetBrains Mono',monospace;">+1 (602) 962-8859</div></div>
-            <div><div class="cm-lbl">Calls This Month</div><div style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--green);">284</div></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- AI COACH -->
-      <div id="co" class="tab-content">
-        <div class="sec-t">AI Sales Coach · Post-Call Analysis</div>
-        <div style="display:grid;gap:11px;">
-          <div class="tl-card" style="border-color:rgba(34,197,94,.25);">
-            <div class="tc-type" style="color:var(--green);margin-bottom:8px;">✓ What Went Well</div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--green);">✓</span><span>Quickly identified soft-start requirement — strong product knowledge</span></div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--green);">✓</span><span>Led with lifetime warranty as differentiator — excellent positioning vs Phase-O-Matic</span></div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--green);">✓</span><span>Called out "Made in USA" the moment customer mentioned it mattered</span></div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--green);">✓</span><span>Free shipping offer effectively neutralized the $295 price gap</span></div>
-          </div>
-          <div class="tl-card" style="border-color:rgba(234,179,8,.25);">
-            <div class="tc-type" style="color:var(--yellow);margin-bottom:8px;">⚡ Opportunities</div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--yellow);">→</span><span>Ask for the close — call ended without a concrete commitment date or next step</span></div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--yellow);">→</span><span>Could offer a direct Shopify checkout link or payment option on the spot</span></div>
-            <div class="coach-item"><span class="coach-ico" style="color:var(--yellow);">→</span><span>Mention install support — CNC lathe owner likely values technical help</span></div>
-          </div>
-          <div class="tl-card" style="border-color:rgba(249,115,22,.25);">
-            <div class="tc-type tt-call" style="margin-bottom:8px;">✦ AI-Suggested Follow-Up Script</div>
-            <div style="background:var(--bg3);border-radius:8px;padding:12px;font-size:12px;color:var(--text2);line-height:1.7;font-style:italic;">
-              "Hey Mike, Danny from Phoenix Phase Converters. Just sending over that GP30NL quote — $2,395 with free shipping to Chandler, covered by our lifetime warranty. If you want to lock it in today, here's the direct link: [link]. Takes 5 mins. Ships in 3–5 days. Let me know if you have questions!"
-            </div>
-            <button class="btn btn-p" style="margin-top:10px;width:100%;justify-content:center;">Send as SMS Now</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- HISTORY -->
-      <div id="hi" class="tab-content">
-        <div class="sec-t">All Interactions</div>
-        <div class="tl-card" style="text-align:center;padding:24px;color:var(--text3);">
-          <div style="font-size:28px;margin-bottom:8px;">👤</div>
-          <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:4px;">First-Time Caller</div>
-          <div style="font-size:12px;">No prior history found. This is Mike's first interaction with Phoenix Phase Converters.</div>
-        </div>
-      </div>
-
+      <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:11px;display:flex;align-items:center;gap:8px;">Customer Timeline <div style="flex:1;height:1px;background:var(--border);"></div></div>
+      <div id="tlContent"><div style="color:var(--text3);font-size:12px;text-align:center;padding:40px;">Select a call to view timeline</div></div>
     </div>
-
-    <!-- CONTEXT PANEL -->
     <div class="ctx">
-
-      <div class="ctx-card">
-        <div class="ctx-t">Lead Score</div>
-        <div class="score-row">
-          <div class="score-ring"><div class="score-num">94</div></div>
-          <div>
-            <div class="score-lbl">🔥 Hot Lead</div>
-            <div class="score-sub">High intent · urgent · budget match</div>
-          </div>
-        </div>
-        <div class="prog-row">
-          <div class="prog-lr"><span class="prog-l">Intent</span><span class="prog-p">95%</span></div>
-          <div class="prog-track"><div class="prog-fill" style="width:95%;background:var(--green);"></div></div>
-        </div>
-        <div class="prog-row">
-          <div class="prog-lr"><span class="prog-l">Urgency</span><span class="prog-p">88%</span></div>
-          <div class="prog-track"><div class="prog-fill" style="width:88%;background:var(--accent);"></div></div>
-        </div>
-        <div class="prog-row">
-          <div class="prog-lr"><span class="prog-l">Budget Fit</span><span class="prog-p">80%</span></div>
-          <div class="prog-track"><div class="prog-fill" style="width:80%;background:var(--blue);"></div></div>
-        </div>
-      </div>
-
       <div class="ctx-card">
         <div class="ctx-t">Contact</div>
-        <div class="ctx-r"><span class="ctx-k">Name</span><span class="ctx-v">Mike Thornton</span></div>
-        <div class="ctx-r"><span class="ctx-k">Phone</span><span class="ctx-v a">480-555-0147</span></div>
-        <div class="ctx-r"><span class="ctx-k">Location</span><span class="ctx-v">Chandler, AZ</span></div>
-        <div class="ctx-r"><span class="ctx-k">Business</span><span class="ctx-v">Machine Shop</span></div>
-        <div class="ctx-r"><span class="ctx-k">Total Calls</span><span class="ctx-v g">1 (first)</span></div>
-        <div class="ctx-r"><span class="ctx-k">LTV</span><span class="ctx-v">—</span></div>
+        <div id="ctxContact"><div style="font-size:11px;color:var(--text3);">—</div></div>
       </div>
-
-      <div class="ctx-card">
-        <div class="ctx-t">Attribution</div>
-        <div class="ctx-r"><span class="ctx-k">Channel</span><span class="ctx-v b">Google Ads</span></div>
-        <div class="ctx-r"><span class="ctx-k">Campaign</span><span class="ctx-v" style="font-size:10px;">30HP Converters</span></div>
-        <div class="ctx-r"><span class="ctx-k">Keyword</span><span class="ctx-v" style="font-size:9px;">30hp rotary phase cvtr</span></div>
-        <div class="ctx-r"><span class="ctx-k">Ad Cost</span><span class="ctx-v">~$18.40</span></div>
-        <div class="ctx-r"><span class="ctx-k">Est. ROAS</span><span class="ctx-v g">130×</span></div>
-      </div>
-
       <div class="ai-rec">
         <div class="ai-rec-t">✦ AI Recommendation</div>
-        <div class="ai-rec-txt">Quote <strong style="color:var(--text);">GP30NL at $2,395</strong> with free shipping. Emphasize lifetime warranty vs Phase-O-Matic. Offer install support. Close by <strong style="color:var(--accent);">5 PM today.</strong></div>
-        <button class="btn btn-p" style="width:100%;justify-content:center;font-size:11px;">📋 Create Quote</button>
-      </div>
-
-      <div class="ctx-card">
-        <div class="ctx-t">Shopify Orders</div>
-        <div style="font-size:11px;color:var(--text3);text-align:center;padding:8px 0;">No prior orders · First-time caller</div>
-        <button class="btn btn-g" style="width:100%;justify-content:center;font-size:11px;margin-top:4px;">Browse Products</button>
-      </div>
-
-      <div class="ctx-card">
-        <div class="ctx-t">Assigned To</div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <div style="width:26px;height:26px;border-radius:6px;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;">D</div>
-          <div>
-            <div style="font-size:12px;font-weight:600;">Danny F.</div>
-            <div style="font-size:10px;color:var(--text3);">Sales · on follow-up</div>
-          </div>
-          <button class="btn btn-g" style="margin-left:auto;font-size:10px;padding:4px 8px;">Reassign</button>
-        </div>
-      </div>
-
-      <div class="ctx-card">
-        <div class="ctx-t">Active Routing Rules</div>
-        <div class="rule-r"><div class="rdot" style="background:var(--green);"></div>Google Ads → Sales ring group</div>
-        <div class="rule-r"><div class="rdot" style="background:var(--accent);"></div>After-hours → Voicemail + SMS</div>
-        <div class="rule-r"><div class="rdot" style="background:var(--blue);"></div>Missed → Auto SMS in 5 min</div>
-      </div>
-
-    </div>
-
-  </div><!-- /det-body -->
-
-  <!-- Compose bar -->
-  <div class="compose-bar">
-    <div class="ctabs">
-      <button class="ctab active" onclick="setCTab(this)">📝 Note</button>
-      <button class="ctab" onclick="setCTab(this)">💬 SMS</button>
-      <button class="ctab" onclick="setCTab(this)">✉️ Email</button>
-      <button class="ctab" onclick="setCTab(this)">✅ Task</button>
-    </div>
-    <textarea class="compose-inp" placeholder="Add an internal note, visible to team only…"></textarea>
-    <div class="cf">
-      <span class="cf-hint">Team-only · Synced to Firebase</span>
-      <div style="display:flex;gap:6px;">
-        <button class="btn btn-g" style="font-size:11px;padding:5px 10px;">Cancel</button>
-        <button class="btn btn-p" style="font-size:11px;padding:5px 12px;">Save Note</button>
+        <div id="ctxRec"><div style="font-size:11px;color:var(--text3);">Select a call</div></div>
       </div>
     </div>
   </div>
-
-</div><!-- /main -->
-
-<script>
-  // Waveform
-  const wf = document.getElementById('wf');
-  [6,9,14,11,18,22,16,19,24,20,15,22,18,13,20,17,12,19,21,14,10,16,13,8,11].forEach(h=>{
-    const b=document.createElement('div');b.className='wv';b.style.height=h+'px';wf.appendChild(b);
-  });
-
-  // Nav
-  function navClick(el){
-    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-    el.classList.add('active');
-  }
-
-  // Call list
-  function selCall(el){
-    document.querySelectorAll('.ci').forEach(c=>c.classList.remove('active'));
-    el.classList.add('active');
-  }
-
-  // Filter chips
-  function setChip(el){
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-    el.classList.add('active');
-  }
-
-  // Main tabs
-  function setTab(el, id){
-    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-    el.classList.add('active');
-    document.querySelectorAll('.tab-content').forEach(tc=>tc.classList.remove('active'));
-    const t=document.getElementById(id);
-    if(t) t.classList.add('active');
-  }
-
-  // Compose tabs
-  function setCTab(el){
-    document.querySelectorAll('.ctab').forEach(t=>t.classList.remove('active'));
-    el.classList.add('active');
-    const map={'📝 Note':'Add an internal note, visible to team only…','💬 SMS':'Type an SMS to send via OpenPhone…','✉️ Email':'Compose an email to this contact…','✅ Task':'Describe the task and set a due date…'};
-    document.querySelector('.compose-inp').placeholder=map[el.textContent]||'Type here…';
-    const hints={'📝 Note':'Team-only · Synced to Firebase','💬 SMS':'Sent via OpenPhone · +16029628859','✉️ Email':'Sent via Gmail','✅ Task':'Creates task in Phoenix CRM'};
-    document.querySelector('.cf-hint').textContent=hints[el.textContent]||'';
-  }
-</script>
+  <div class="compose-bar">
+    <div class="ctabs">
+      <button class="ctab active">📝 Note</button>
+      <button class="ctab">💬 SMS</button>
+      <button class="ctab">✉️ Email</button>
+      <button class="ctab">✅ Task</button>
+    </div>
+    <textarea class="compose-inp" placeholder="Add an internal note…"></textarea>
+    <div class="cf">
+      <span style="font-size:10.5px;color:var(--text3);">Team-only · Synced to Firebase</span>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-g" style="font-size:11px;padding:5px 10px;">Cancel</button>
+        <button class="btn btn-p" style="font-size:11px;padding:5px 12px;" onclick="saveNote()">Save Note</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
