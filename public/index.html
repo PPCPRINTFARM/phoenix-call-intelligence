@@ -4,256 +4,628 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Phoenix Call Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-  import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+  import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, getDoc, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
   import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
 
-  const app = initializeApp({
+  const firebaseConfig = {
     apiKey: "AIzaSyAF1kBNAxhea9FQpj3keKRweLIsoVcG0eQ",
     authDomain: "checkit-b73a7.firebaseapp.com",
     projectId: "checkit-b73a7",
     storageBucket: "checkit-b73a7.firebasestorage.app",
     messagingSenderId: "571399293814",
     appId: "1:571399293814:web:576bf3804e3389abac4857"
-  });
+  };
 
+  const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
   const auth = getAuth(app);
+
+  // ── State ──────────────────────────────────────
   let selectedCallId = null;
   let callsCache = {};
 
+  // ── Auth ───────────────────────────────────────
   signInAnonymously(auth).catch(console.error);
-  onAuthStateChanged(auth, user => { if (user) startListeners(); });
 
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      startListeners();
+    }
+  });
+
+  // ── Realtime Listeners ─────────────────────────
   function startListeners() {
-    onSnapshot(query(collection(db,'calls'), orderBy('created_at','desc'), limit(50)), snap => {
-      snap.docChanges().forEach(change => {
+    // Live call list
+    const callsQuery = query(
+      collection(db, 'incoming_calls'),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+
+    onSnapshot(callsQuery, (snapshot) => {
+      snapshot.docChanges().forEach(change => {
         const data = { id: change.doc.id, ...change.doc.data() };
         callsCache[data.id] = data;
-        if (change.type !== 'removed') renderCallItem(data);
-        else document.getElementById('ci-'+data.id)?.remove();
+
+        if (change.type === 'added' || change.type === 'modified') {
+          renderCallItem(data);
+        }
+        if (change.type === 'removed') {
+          document.getElementById(`ci-${data.id}`)?.remove();
+        }
       });
-      if (!selectedCallId && Object.keys(callsCache).length > 0)
-        selectCall(Object.values(callsCache)[0].id);
+
+      // Auto-select first call if none selected
+      if (!selectedCallId && Object.keys(callsCache).length > 0) {
+        const first = Object.values(callsCache)[0];
+        selectCall(first.id);
+      }
     });
-    onSnapshot(doc(db,'stats','today'), snap => { if(snap.exists()) renderStats(snap.data()); });
+
+    // Live stats
+    onSnapshot(doc(db, 'stats', 'today'), (snap) => {
+      if (snap.exists()) {
+        renderStats(snap.data());
+      }
+    });
   }
 
+  // ── Render Call List Item ──────────────────────
   function renderCallItem(call) {
     const list = document.getElementById('callList');
-    let el = document.getElementById('ci-'+call.id);
+    let el = document.getElementById(`ci-${call.id}`);
+
     const isNew = !el;
-    if (isNew) { el = document.createElement('div'); el.id='ci-'+call.id; el.className='ci'; el.onclick=()=>selectCall(call.id); }
-    const ai = call.ai || {};
+    if (isNew) {
+      el = document.createElement('div');
+      el.id = `ci-${call.id}`;
+      el.className = 'ci';
+      el.onclick = () => selectCall(call.id);
+    }
+
+    const dotClass = call.status === 'missed' ? 'dr' :
+                     call.status === 'active' ? 'dg' : 'dq';
+
+    const srcClass = (call.source || '').toLowerCase().includes('google') ? 'sg' :
+                     (call.source || '').toLowerCase().includes('organic') ? 'so' :
+                     (call.source || '').toLowerCase().includes('email') ? 'se' : 'sd';
+
+    const leadLabel = call.lead_label || call.ai?.lead_label || '';
+    const leadScore = call.lead_score || call.ai?.lead_score || 0;
+    const summary = call.aiSummary || call.ai?.summary || '';
+
+    const timeAgo = getTimeAgo(call.createdAt);
+    const duration = formatDuration(call.duration || 0);
+
     el.innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-        <div style="font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:5px;">
-          <div style="width:7px;height:7px;border-radius:50%;background:${call.status==='missed'?'#ef4444':call.status==='active'?'#22c55e':'#64748b'};flex-shrink:0;"></div>
-          ${call.caller_name||call.phone||'Unknown'}
-        </div>
-        <div style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;">${getTimeAgo(call.created_at)}</div>
+      <div class="ci-top">
+        <div class="ci-name"><div class="dot ${dotClass}"></div>${call.callerName || call.callerNumber}</div>
+        <div class="ci-time">${timeAgo}</div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
-        <span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(66,133,244,.14);color:#4285f4;">${call.source||'Direct'}</span>
-        <span style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-left:auto;">${formatDuration(call.duration||0)}</span>
+      <div class="ci-meta">
+        <span class="src ${srcClass}">${call.source || 'Direct'}</span>
+        <span class="ci-dur">${duration}</span>
       </div>
-      <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${ai.summary||call.ai_summary||(call.status==='missed'?'Missed call — no answer.':'Processing...')}</div>
-      <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">
-        ${(ai.lead_score||0)>=70?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(249,115,22,.13);color:#f97316;">🔥 ${ai.lead_label||'Hot Lead'}</span>`:''}
-        ${call.status==='missed'?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(239,68,68,.12);color:#ef4444;">Missed</span>`:''}
-        ${(ai.estimated_value||0)>0?`<span style="padding:2px 6px;border-radius:4px;font-size:10px;background:rgba(34,197,94,.12);color:#22c55e;">$${ai.estimated_value.toLocaleString()}</span>`:''}
-      </div>`;
-    if (isNew) { list.prepend(el); el.style.background='rgba(249,115,22,0.08)'; setTimeout(()=>el.style.background='',2000); }
+      <div class="ci-snip">${summary || (call.status === 'missed' ? 'Missed call — no answer.' : 'Processing...')}</div>
+      <div class="ci-tags">
+        ${leadScore >= 70 ? `<span class="tag t-hot">🔥 ${leadLabel}</span>` : ''}
+        ${call.status === 'missed' ? `<span class="tag t-mis">Missed</span>` : ''}
+        ${call.ai?.follow_up_required ? `<span class="tag t-fol">Follow Up</span>` : ''}
+        ${call.ai?.estimated_value > 0 ? `<span class="tag t-sal">$${call.ai.estimated_value.toLocaleString()}</span>` : ''}
+      </div>
+    `;
+
+    if (isNew) {
+      list.prepend(el);
+      // Flash new call
+      el.style.background = 'rgba(249,115,22,0.1)';
+      setTimeout(() => el.style.background = '', 2000);
+    }
   }
 
-  window.selectCall = function(id) {
-    selectedCallId = id;
-    document.querySelectorAll('.ci').forEach(c=>c.classList.remove('active'));
-    document.getElementById('ci-'+id)?.classList.add('active');
-    const call = callsCache[id]; if (!call) return;
+  // ── Select Call → Load Detail ──────────────────
+  window.selectCall = function(callId) {
+    selectedCallId = callId;
+
+    // Update active state
+    document.querySelectorAll('.ci').forEach(c => c.classList.remove('active'));
+    document.getElementById(`ci-${callId}`)?.classList.add('active');
+
+    const call = callsCache[callId];
+    if (!call) return;
+
+    // Update header
+    const initials = (call.callerName || 'UN').split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase();
+    document.getElementById('callerAv').textContent = initials;
+    document.getElementById('callerName').textContent = call.callerName || call.callerNumber;
+    document.getElementById('callerPhone').textContent = `${formatPhone(call.callerNumber)} · ${call.direction === 'inbound' ? 'Inbound' : 'Outbound'}`;
+
+    // Update pills
+    const pillsEl = document.getElementById('callerPills');
     const ai = call.ai || {};
-    const ini = (call.caller_name||'UN').split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
-    document.getElementById('callerAv').textContent = ini;
-    document.getElementById('callerName').textContent = call.caller_name||call.phone||'Unknown';
-    document.getElementById('callerPhone').textContent = formatPhone(call.phone)+' · '+(call.direction||'inbound');
-    document.getElementById('tlContent').innerHTML = `
-      <div style="display:flex;gap:11px;margin-bottom:16px;">
-        <div style="display:flex;flex-direction:column;align-items:center;width:28px;flex-shrink:0;">
-          <div style="width:28px;height:28px;border-radius:8px;background:rgba(249,115,22,.13);border:1px solid rgba(249,115,22,.28);display:flex;align-items:center;justify-content:center;font-size:12px;">📞</div>
-          <div style="flex:1;width:1px;background:rgba(255,255,255,.07);margin:3px 0;"></div>
-        </div>
-        <div style="flex:1;background:#0f1117;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:12px 14px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;font-family:'JetBrains Mono',monospace;color:#f97316;">${call.direction==='inbound'?'Inbound':'Outbound'} Call · ${call.source||'Direct'}</div>
-            <div style="font-size:10px;color:#64748b;font-family:'JetBrains Mono',monospace;">${formatDateTime(call.created_at)} · ${formatDuration(call.duration||0)}</div>
-          </div>
-          <div style="font-size:12.5px;color:#94a3b8;line-height:1.6;">
-            ${call.caller_name?`<strong style="color:#f1f5f9;">${call.caller_name}</strong> called`:'Call received'}
-            ${call.agent?`. Answered by <strong style="color:#f1f5f9;">${call.agent}</strong>.`:call.status==='missed'?' — <strong style="color:#ef4444;">Not answered.</strong>':'.'}
-          </div>
-          <div style="display:flex;background:#151820;border-radius:8px;margin-top:9px;overflow:hidden;">
-            <div style="padding:9px 12px;flex:1;border-right:1px solid rgba(255,255,255,.07);">
-              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Duration</div>
-              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${(call.duration||0)>60?'#22c55e':'#ef4444'};">${formatDuration(call.duration||0)}</div>
-            </div>
-            <div style="padding:9px 12px;flex:1;border-right:1px solid rgba(255,255,255,.07);">
-              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Lead Score</div>
-              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#f97316;">${ai.lead_score||'—'}/100</div>
-            </div>
-            <div style="padding:9px 12px;flex:1;">
-              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">Sentiment</div>
-              <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;">${ai.sentiment||'—'}</div>
-            </div>
-          </div>
-          ${ai.summary?`<div style="background:linear-gradient(135deg,rgba(249,115,22,.06),rgba(59,130,246,.05));border:1px solid rgba(249,115,22,.18);border-radius:8px;padding:10px 12px;margin-top:9px;">
-            <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:#f97316;font-family:'JetBrains Mono',monospace;font-weight:700;margin-bottom:4px;">✦ AI Summary</div>
-            <div style="font-size:12px;color:#94a3b8;line-height:1.65;">${ai.summary}</div>
-          </div>`:''}
-          ${(ai.keywords||[]).length?`<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px;">${(ai.keywords||[]).map(k=>`<span style="padding:2px 7px;background:rgba(249,115,22,.13);border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace;color:#f97316;border:1px solid rgba(249,115,22,.28);">${k}</span>`).join('')}</div>`:''}
-        </div>
-      </div>`;
-    document.getElementById('ctxContact').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Name</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.caller_name||'Unknown'}</span></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Phone</span><span style="font-size:11px;color:#f97316;font-family:'JetBrains Mono',monospace;">${formatPhone(call.phone)}</span></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Source</span><span style="font-size:11px;color:#3b82f6;font-family:'JetBrains Mono',monospace;">${call.source||'Direct'}</span></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;color:#64748b;">Campaign</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.campaign||'—'}</span></div>
-      <div style="display:flex;justify-content:space-between;"><span style="font-size:11px;color:#64748b;">Agent</span><span style="font-size:11px;color:#f1f5f9;font-family:'JetBrains Mono',monospace;">${call.agent||'—'}</span></div>`;
-    document.getElementById('ctxRec').innerHTML = `
-      <div style="font-size:12px;color:#94a3b8;line-height:1.6;margin-bottom:9px;">${ai.recommended_action||'Review call and follow up.'}</div>
-      ${ai.recommended_product?`<div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">Product: <strong style="color:#f1f5f9;">${ai.recommended_product}</strong></div>`:''}
-      ${(ai.estimated_value||0)>0?`<div style="font-size:12px;color:#22c55e;font-weight:700;margin-bottom:8px;">Est. $${ai.estimated_value.toLocaleString()}</div>`:''}`;
+    pillsEl.innerHTML = `
+      ${(ai.lead_score || call.lead_score || 0) >= 70 ? `<span class="pill ph">🔥 ${ai.lead_label || 'Hot Lead'}</span>` : ''}
+      ${call.status === 'missed' ? `<span class="pill" style="background:var(--red-dim);color:var(--red);">Missed</span>` : ''}
+      <span class="pill ps">${call.source || 'Direct'}</span>
+      ${call.campaign ? `<span class="pill ps">${call.campaign}</span>` : ''}
+    `;
+
+    // Update timeline
+    renderTimeline(call);
+
+    // Update context panel
+    renderContext(call);
   };
 
+  // ── Render Timeline ────────────────────────────
+  function renderTimeline(call) {
+    const ai = call.ai || {};
+    const tl = document.getElementById('tlContent');
+
+    const kwHtml = (ai.keywords || []).map(k =>
+      `<span class="kw hot">${k}</span>`
+    ).join('');
+
+    tl.innerHTML = `
+      <div class="tl-item">
+        <div class="tl-spine"><div class="tl-dot td-call">📞</div><div class="tl-line"></div></div>
+        <div class="tl-card">
+          <div class="tc-top">
+            <div class="tc-type tt-call">${call.direction === 'inbound' ? 'Inbound' : 'Outbound'} Call · ${call.source || 'Direct'}</div>
+            <div class="tc-ts">${formatDateTime(call.createdAt)} · ${formatDuration(call.duration || 0)}</div>
+          </div>
+          <div class="tc-body">
+            ${call.callerName ? `<strong>${call.callerName}</strong> called` : 'Call'} 
+            ${call.tracking_number ? `the <strong>${call.source || 'tracking'} number</strong>` : ''}.
+            ${call.agent ? `Answered by <strong>${call.agent}</strong>.` : call.status === 'missed' ? '<strong>Not answered.</strong>' : ''}
+            ${call.recording_url ? `<a href="${call.recording_url}" target="_blank" style="color:var(--accent);margin-left:6px;">▶ Play Recording</a>` : ''}
+          </div>
+          <div class="cm-row">
+            <div class="cm"><div class="cm-lbl">Duration</div><div class="cm-val" style="color:${call.duration > 60 ? 'var(--green)' : 'var(--red)'};">${formatDuration(call.duration || 0)}</div></div>
+            <div class="cm"><div class="cm-lbl">Status</div><div class="cm-val">${call.status || 'completed'}</div></div>
+            <div class="cm"><div class="cm-lbl">Lead Score</div><div class="cm-val" style="color:var(--accent);">${ai.lead_score || call.lead_score || '—'}/100</div></div>
+            <div class="cm"><div class="cm-lbl">Sentiment</div><div class="cm-val">${ai.sentiment || '—'}</div></div>
+          </div>
+          ${ai.summary ? `
+          <div class="ai-box">
+            <div class="ai-lbl">✦ AI Summary</div>
+            <div class="ai-text">${ai.summary}</div>
+          </div>` : ''}
+          ${kwHtml ? `<div class="kw-list">${kwHtml}</div>` : ''}
+        </div>
+      </div>
+
+      ${call.status === 'missed' ? `
+      <div class="tl-item">
+        <div class="tl-spine"><div class="tl-dot td-note" style="background:var(--red-dim);border-color:rgba(239,68,68,.28);">🔴</div><div class="tl-line"></div></div>
+        <div class="tl-card">
+          <div class="tc-top"><div class="tc-type" style="color:var(--red);">Missed Call Alert</div><div class="tc-ts">${formatDateTime(call.createdAt)}</div></div>
+          <div class="tc-body">No answer. ${ai.recommended_action || 'Follow up recommended within 30 minutes.'}</div>
+        </div>
+      </div>` : ''}
+
+      <div id="notesTimeline"></div>
+
+      <div class="tl-div">LOADING HISTORY…</div>
+    `;
+
+    // Load notes for this call
+    onSnapshot(
+      query(collection(db, 'notes'), orderBy('createdAt', 'desc')),
+      (snap) => {
+        const notesEl = document.getElementById('notesTimeline');
+        if (!notesEl) return;
+        const notes = snap.docs
+          .filter(d => d.data().call_id === call.id)
+          .map(d => d.data());
+
+        notesEl.innerHTML = notes.map(note => `
+          <div class="tl-item">
+            <div class="tl-spine"><div class="tl-dot td-note">📝</div><div class="tl-line"></div></div>
+            <div class="tl-card">
+              <div class="tc-top"><div class="tc-type tt-note">Note · ${note.author || 'Team'}</div><div class="tc-ts">${formatDateTime(note.created_at?.toDate?.() || note.created_at)}</div></div>
+              <div class="tc-body">${note.body}</div>
+            </div>
+          </div>
+        `).join('');
+      }
+    );
+  }
+
+  // ── Render Context Panel ───────────────────────
+  function renderContext(call) {
+    const ai = call.ai || {};
+    const score = ai.lead_score || call.lead_score || 0;
+    const pct = score + '%';
+
+    document.getElementById('ctxScore').innerHTML = `
+      <div class="score-ring" style="background:conic-gradient(${score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)'} 0% ${pct}, var(--bg4) ${pct})">
+        <div class="score-num" style="color:${score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)'};">${score}</div>
+      </div>
+      <div>
+        <div class="score-lbl">${ai.lead_label || 'Unknown'}</div>
+        <div class="score-sub">${ai.sentiment || ''} · ${call.direction || 'inbound'}</div>
+      </div>
+    `;
+
+    document.getElementById('ctxBars').innerHTML = `
+      <div class="prog-row">
+        <div class="prog-lr"><span class="prog-l">Intent</span><span class="prog-p">${ai.intent_score || 0}%</span></div>
+        <div class="prog-track"><div class="prog-fill" style="width:${ai.intent_score || 0}%;background:var(--green);"></div></div>
+      </div>
+      <div class="prog-row">
+        <div class="prog-lr"><span class="prog-l">Urgency</span><span class="prog-p">${ai.urgency_score || 0}%</span></div>
+        <div class="prog-track"><div class="prog-fill" style="width:${ai.urgency_score || 0}%;background:var(--accent);"></div></div>
+      </div>
+      <div class="prog-row">
+        <div class="prog-lr"><span class="prog-l">Budget Fit</span><span class="prog-p">${ai.budget_score || 0}%</span></div>
+        <div class="prog-track"><div class="prog-fill" style="width:${ai.budget_score || 0}%;background:var(--blue);"></div></div>
+      </div>
+    `;
+
+    document.getElementById('ctxContact').innerHTML = `
+      <div class="ctx-r"><span class="ctx-k">Name</span><span class="ctx-v">${call.callerName || 'Unknown'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Phone</span><span class="ctx-v a">${formatPhone(call.callerNumber)}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Direction</span><span class="ctx-v">${call.direction || 'inbound'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Duration</span><span class="ctx-v">${formatDuration(call.duration || 0)}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Agent</span><span class="ctx-v">${call.agent || '—'}</span></div>
+    `;
+
+    document.getElementById('ctxAttrib').innerHTML = `
+      <div class="ctx-r"><span class="ctx-k">Channel</span><span class="ctx-v b">${call.source || 'Direct'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Campaign</span><span class="ctx-v" style="font-size:10px;">${call.campaign || '—'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Keyword</span><span class="ctx-v" style="font-size:9px;">${call.keyword || '—'}</span></div>
+      <div class="ctx-r"><span class="ctx-k">Tracking #</span><span class="ctx-v a">${call.tracking_number || '—'}</span></div>
+    `;
+
+    document.getElementById('ctxRec').innerHTML = `
+      <div class="ai-rec-txt">${ai.recommended_action || 'Review call and follow up.'}</div>
+      ${ai.recommended_product ? `<div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Suggested: <strong style="color:var(--text);">${ai.recommended_product}</strong></div>` : ''}
+      ${ai.estimated_value > 0 ? `<div style="font-size:11px;color:var(--green);margin-bottom:10px;">Est. value: $${ai.estimated_value.toLocaleString()}</div>` : ''}
+      <button class="btn btn-p" style="width:100%;justify-content:center;font-size:11px;" onclick="openShopify('${call.callerNumber}')">📋 View in Shopify</button>
+    `;
+
+    // Fetch Shopify orders for this phone
+    fetchShopifyOrders(call.callerNumber);
+  }
+
+  // ── Render Stats Bar ───────────────────────────
+  function renderStats(stats) {
+    document.getElementById('statCalls').textContent = stats.total_calls || 0;
+    document.getElementById('statRevenue').textContent = `$${(stats.revenue_today || 0).toLocaleString()}`;
+    document.getElementById('statDuration').textContent = stats.avg_duration_display || '0:00';
+    document.getElementById('statLeadRate').textContent = `${stats.lead_rate || 0}%`;
+    document.getElementById('statMissed').textContent = stats.missed_calls || 0;
+  }
+
+  // ── Fetch Shopify Orders ───────────────────────
+  async function fetchShopifyOrders(phone) {
+    if (!phone) return;
+    // This goes through a Netlify function proxy to avoid CORS
+    try {
+      const clean = phone.replace(/\D/g, '');
+      const res = await fetch(`/.netlify/functions/shopify-orders?phone=${clean}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      renderOrders(data.orders || []);
+    } catch(e) {
+      document.getElementById('ctxOrders').innerHTML = `<div style="font-size:11px;color:var(--text3);text-align:center;padding:8px;">No orders found</div>`;
+    }
+  }
+
+  function renderOrders(orders) {
+    const el = document.getElementById('ctxOrders');
+    if (!orders.length) {
+      el.innerHTML = `<div style="font-size:11px;color:var(--text3);text-align:center;padding:8px;">No prior orders</div>`;
+      return;
+    }
+    el.innerHTML = orders.slice(0,3).map(o => `
+      <div class="order-item">
+        <div class="order-icon">🛍</div>
+        <div style="flex:1;min-width:0;">
+          <div class="order-name">#${o.order_number}</div>
+          <div class="order-date">${new Date(o.created_at).toLocaleDateString()}</div>
+        </div>
+        <div class="order-price">$${parseFloat(o.total_price).toLocaleString()}</div>
+      </div>
+    `).join('');
+  }
+
+  // ── Save Note ──────────────────────────────────
   window.saveNote = async function() {
     const body = document.querySelector('.compose-inp').value.trim();
-    if (!body||!selectedCallId) return;
-    await addDoc(collection(db,'notes'),{call_id:selectedCallId,body,author:'Glen',created_at:serverTimestamp()});
-    document.querySelector('.compose-inp').value='';
+    if (!body || !selectedCallId) return;
+
+    await addDoc(collection(db, 'notes'), {
+      call_id: selectedCallId,
+      body,
+      author: 'Glen',
+      created_at: serverTimestamp()
+    });
+
+    document.querySelector('.compose-inp').value = '';
   };
 
-  function renderStats(s) {
-    document.getElementById('statCalls').textContent = s.total_calls||0;
-    document.getElementById('statRevenue').textContent = '$'+(s.revenue_today||0).toLocaleString();
-    document.getElementById('statDuration').textContent = s.avg_duration_display||'0:00';
-    document.getElementById('statLeadRate').textContent = (s.lead_rate||0)+'%';
-    document.getElementById('statMissed').textContent = s.missed_calls||0;
+  // ── Send SMS ───────────────────────────────────
+  window.sendSMS = async function() {
+    const call = callsCache[selectedCallId];
+    if (!call) return;
+    const body = document.querySelector('.compose-inp').value.trim();
+    if (!body) return;
+
+    try {
+      await fetch('/.netlify/functions/send-sms', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ to: call.callerNumber, message: body })
+      });
+      document.querySelector('.compose-inp').value = '';
+      alert('SMS sent!');
+    } catch(e) {
+      alert('SMS failed: ' + e.message);
+    }
+  };
+
+  // ── Helpers ────────────────────────────────────
+  function formatDuration(secs) {
+    if (!secs) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
-  function formatDuration(s){if(!s)return'0:00';return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0');}
-  function formatPhone(p){if(!p)return'—';const d=p.replace(/\D/g,'');if(d.length===11)return`+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;if(d.length===10)return`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;return p;}
-  function formatDateTime(ts){if(!ts)return'';const d=ts.toDate?ts.toDate():new Date(ts);return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
-  function getTimeAgo(ts){if(!ts)return'';const d=ts.toDate?ts.toDate():new Date(ts);const m=Math.floor((Date.now()-d.getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';if(m<1440)return Math.floor(m/60)+'h ago';return Math.floor(m/1440)+'d ago';}
+  function formatPhone(phone) {
+    if (!phone) return '—';
+    const d = phone.replace(/\D/g, '');
+    if (d.length === 11) return `+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+    if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+    return phone;
+  }
+
+  function formatDateTime(ts) {
+    if (!ts) return '';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  }
+
+  function getTimeAgo(ts) {
+    if (!ts) return '';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    const diff = Date.now() - d.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs/24)}d ago`;
+  }
+
+  window.openShopify = function(phone) {
+    window.open(`https://electricmotorexperts.myshopify.com/admin/customers?query=${encodeURIComponent(phone)}`, '_blank');
+  };
 </script>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
 <style>
-:root{--bg:#0a0c10;--bg2:#0f1117;--bg3:#151820;--bg4:#1c2030;--border:rgba(255,255,255,0.07);--accent:#f97316;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;}
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;font-size:13px;}
-.sidebar{width:210px;min-width:210px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
-.logo{padding:16px 14px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
-.logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(249,115,22,.25);flex-shrink:0;}
-.logo-text{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;}
-.logo-sub{font-size:9px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
-.nav-section{padding:10px 8px 2px;}
-.nav-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:3px;font-family:'JetBrains Mono',monospace;}
-.nav-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;color:var(--text2);font-size:12.5px;font-weight:500;margin-bottom:1px;transition:all .14s;position:relative;}
-.nav-item:hover{background:var(--bg3);color:var(--text);}
-.nav-item.active{background:rgba(249,115,22,.13);color:var(--accent);}
-.nav-item.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;}
-.nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:20px;}
-.nav-badge.green{background:var(--green);}
-.sidebar-footer{margin-top:auto;border-top:1px solid var(--border);padding:10px 8px;}
-.user-card{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;cursor:pointer;}
-.list-panel{width:295px;min-width:295px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
-.panel-hdr{padding:14px 14px 10px;border-bottom:1px solid var(--border);}
-.panel-title{font-family:'Syne',sans-serif;font-weight:700;font-size:15px;margin-bottom:10px;}
-.search-box{display:flex;align-items:center;gap:7px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 11px;}
-.search-box input{background:none;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;flex:1;}
-.search-box input::placeholder{color:var(--text3);}
-.call-list{flex:1;overflow-y:auto;padding:6px 0;}
-.call-list::-webkit-scrollbar{width:3px;}
-.call-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-.ci{padding:11px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;}
-.ci:hover{background:var(--bg3);}
-.ci.active{background:var(--bg3);border-left:2px solid var(--accent);padding-left:12px;}
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.stats-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;overflow-x:auto;}
-.sc{padding:10px 16px;border-right:1px solid var(--border);min-width:100px;flex-shrink:0;}
-.sv{font-family:'Syne',sans-serif;font-weight:800;font-size:19px;letter-spacing:-.4px;line-height:1;margin-bottom:2px;}
-.sl{font-size:9.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-family:'JetBrains Mono',monospace;}
-.det-hdr{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:13px;background:var(--bg2);flex-shrink:0;}
-.cav{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--accent),#dc2626);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:17px;flex-shrink:0;}
-.cname{font-family:'Syne',sans-serif;font-weight:700;font-size:17px;letter-spacing:-.3px;}
-.cphone{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text2);margin-top:2px;}
-.btn{padding:6px 13px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:5px;transition:all .14s;}
-.btn-p{background:var(--accent);color:#fff;}
-.btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);}
-.det-body{flex:1;display:flex;overflow:hidden;}
-.tl-col{flex:1;overflow-y:auto;padding:16px 18px;}
-.tl-col::-webkit-scrollbar{width:3px;}
-.tl-col::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-.ctx{width:255px;min-width:255px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:13px;}
-.ctx-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:9px;}
-.ctx-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:8px;}
-.ai-rec{background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(249,115,22,.02));border:1px solid rgba(249,115,22,.25);border-radius:10px;padding:12px;margin-bottom:9px;}
-.ai-rec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;margin-bottom:6px;}
-.compose-bar{padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
-.ctabs{display:flex;gap:5px;margin-bottom:7px;}
-.ctab{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;font-family:'Inter',sans-serif;transition:all .14s;}
-.ctab.active{background:rgba(249,115,22,.13);border-color:var(--accent);color:var(--accent);}
-.compose-inp{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;outline:none;height:56px;}
-.compose-inp:focus{border-color:var(--accent);}
-.compose-inp::placeholder{color:var(--text3);}
-.cf{display:flex;align-items:center;justify-content:space-between;margin-top:6px;}
-.ldot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.6s infinite;display:inline-block;}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
-.live-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;}
-.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text3);}
-.spinner{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg)}}
+  /* ── Same styles as static version ── */
+  :root {
+    --bg:#0a0c10;--bg2:#0f1117;--bg3:#151820;--bg4:#1c2030;
+    --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
+    --accent:#f97316;--accent2:#fb923c;--accent-dim:rgba(249,115,22,0.13);--accent-glow:rgba(249,115,22,0.25);
+    --green:#22c55e;--green-dim:rgba(34,197,94,0.12);
+    --red:#ef4444;--red-dim:rgba(239,68,68,0.12);
+    --blue:#3b82f6;--blue-dim:rgba(59,130,246,0.12);
+    --yellow:#eab308;--yellow-dim:rgba(234,179,8,0.12);
+    --purple:#a855f7;--text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;--radius:10px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;font-size:13px;}
+  .sidebar{width:210px;min-width:210px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
+  .logo{padding:16px 14px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+  .logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px var(--accent-glow);flex-shrink:0;}
+  .logo-text{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:-.3px;}
+  .logo-sub{font-size:9px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
+  .nav-section{padding:10px 8px 2px;}
+  .nav-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:3px;font-family:'JetBrains Mono',monospace;}
+  .nav-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;color:var(--text2);transition:all .14s;font-size:12.5px;font-weight:500;position:relative;margin-bottom:1px;}
+  .nav-item:hover{background:var(--bg3);color:var(--text);}
+  .nav-item.active{background:var(--accent-dim);color:var(--accent);}
+  .nav-item.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;}
+  .nav-icon{font-size:14px;width:16px;text-align:center;}
+  .nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:20px;font-family:'JetBrains Mono',monospace;}
+  .nav-badge.green{background:var(--green);}
+  .sidebar-footer{margin-top:auto;border-top:1px solid var(--border);padding:10px 8px;}
+  .user-card{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;cursor:pointer;}
+  .user-av{width:28px;height:28px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;color:#fff;}
+  .user-name{font-weight:600;font-size:12px;}.user-role{font-size:10px;color:var(--text3);}
+  .list-panel{width:295px;min-width:295px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
+  .panel-hdr{padding:14px 14px 10px;border-bottom:1px solid var(--border);}
+  .panel-title{font-family:'Syne',sans-serif;font-weight:700;font-size:15px;margin-bottom:10px;}
+  .search-box{display:flex;align-items:center;gap:7px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 11px;}
+  .search-box input{background:none;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;flex:1;}
+  .search-box input::placeholder{color:var(--text3);}
+  .call-list{flex:1;overflow-y:auto;padding:6px 0;}
+  .call-list::-webkit-scrollbar{width:3px;}
+  .call-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+  .loading-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text3);}
+  .spinner{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .ci{padding:11px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:all .1s;position:relative;}
+  .ci:hover{background:var(--bg3);}
+  .ci.active{background:var(--bg3);border-left:2px solid var(--accent);padding-left:12px;}
+  .ci-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;}
+  .ci-name{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+  .dg{background:var(--green);box-shadow:0 0 5px var(--green);}
+  .dr{background:var(--red);}
+  .dq{background:var(--text3);}
+  .ci-time{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;}
+  .ci-meta{display:flex;align-items:center;gap:6px;margin-top:3px;}
+  .src{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;}
+  .sg{background:rgba(66,133,244,.14);color:#4285f4;}
+  .so{background:var(--green-dim);color:var(--green);}
+  .sd{background:var(--accent-dim);color:var(--accent);}
+  .se{background:rgba(168,85,247,.12);color:var(--purple);}
+  .ci-dur{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-left:auto;}
+  .ci-snip{font-size:11px;color:var(--text2);margin-top:4px;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+  .ci-tags{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;}
+  .tag{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:500;}
+  .t-hot{background:var(--accent-dim);color:var(--accent);}
+  .t-mis{background:var(--red-dim);color:var(--red);}
+  .t-fol{background:var(--yellow-dim);color:var(--yellow);}
+  .t-sal{background:var(--green-dim);color:var(--green);}
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+  .stats-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
+  .sc{padding:10px 16px;border-right:1px solid var(--border);min-width:100px;flex-shrink:0;}
+  .sv{font-family:'Syne',sans-serif;font-weight:800;font-size:19px;letter-spacing:-.4px;line-height:1;margin-bottom:2px;}
+  .sl{font-size:9.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-family:'JetBrains Mono',monospace;}
+  .det-hdr{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:13px;background:var(--bg2);flex-shrink:0;}
+  .cav{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--accent),#dc2626);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:17px;flex-shrink:0;}
+  .cname{font-family:'Syne',sans-serif;font-weight:700;font-size:17px;letter-spacing:-.3px;}
+  .cphone{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text2);margin-top:2px;}
+  .cpills{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;}
+  .pill{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;}
+  .ph{background:var(--accent-dim);color:var(--accent);}
+  .ps{background:var(--blue-dim);color:var(--blue);}
+  .live-chip{display:inline-flex;align-items:center;gap:4px;background:var(--green-dim);border:1px solid rgba(34,197,94,.3);color:var(--green);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+  .ldot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.6s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
+  .hdr-acts{display:flex;gap:6px;align-items:center;}
+  .btn{padding:6px 13px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:'Inter',sans-serif;transition:all .14s;display:flex;align-items:center;gap:5px;}
+  .btn-p{background:var(--accent);color:#fff;box-shadow:0 2px 10px var(--accent-glow);}
+  .btn-p:hover{background:var(--accent2);}
+  .btn-g{background:var(--bg3);color:var(--text2);border:1px solid var(--border);}
+  .btn-g:hover{background:var(--bg4);color:var(--text);}
+  .bico{width:30px;height:30px;padding:0;justify-content:center;font-size:14px;}
+  .det-body{flex:1;display:flex;overflow:hidden;}
+  .tl-col{flex:1;overflow-y:auto;padding:16px 18px;}
+  .tl-col::-webkit-scrollbar{width:3px;}
+  .tl-col::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+  .sec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:11px;display:flex;align-items:center;gap:8px;}
+  .sec-t::after{content:'';flex:1;height:1px;background:var(--border);}
+  .tl-item{display:flex;gap:11px;margin-bottom:16px;animation:fadeUp .3s ease both;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+  .tl-spine{display:flex;flex-direction:column;align-items:center;width:28px;flex-shrink:0;}
+  .tl-dot{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+  .td-call{background:var(--accent-dim);border:1px solid rgba(249,115,22,.28);}
+  .td-sms{background:var(--blue-dim);border:1px solid rgba(59,130,246,.28);}
+  .td-note{background:var(--yellow-dim);border:1px solid rgba(234,179,8,.28);}
+  .tl-line{flex:1;width:1px;background:var(--border);margin:3px 0;}
+  .tl-card{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;}
+  .tc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+  .tc-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;font-family:'JetBrains Mono',monospace;}
+  .tt-call{color:var(--accent);}.tt-note{color:var(--yellow);}
+  .tc-ts{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;}
+  .tc-body{font-size:12.5px;color:var(--text2);line-height:1.6;}
+  .tc-body strong{color:var(--text);}
+  .cm-row{display:flex;background:var(--bg3);border-radius:8px;margin-top:9px;overflow:hidden;}
+  .cm{padding:9px 12px;flex:1;border-right:1px solid var(--border);}
+  .cm:last-child{border-right:none;}
+  .cm-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:3px;}
+  .cm-val{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+  .ai-box{background:linear-gradient(135deg,rgba(249,115,22,.06),rgba(59,130,246,.05));border:1px solid rgba(249,115,22,.18);border-radius:8px;padding:10px 12px;margin-top:9px;}
+  .ai-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;font-weight:700;margin-bottom:4px;}
+  .ai-text{font-size:12px;color:var(--text2);line-height:1.65;}
+  .kw-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px;}
+  .kw{padding:2px 7px;background:var(--bg4);border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--text2);border:1px solid var(--border);}
+  .kw.hot{background:var(--accent-dim);border-color:rgba(249,115,22,.28);color:var(--accent);}
+  .tl-div{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:9.5px;font-family:'JetBrains Mono',monospace;letter-spacing:1px;margin:2px 0 14px;}
+  .tl-div::before,.tl-div::after{content:'';flex:1;height:1px;background:var(--border);}
+  .compose-bar{padding:12px 18px;border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
+  .ctabs{display:flex;gap:5px;margin-bottom:7px;}
+  .ctab{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;font-family:'Inter',sans-serif;transition:all .14s;}
+  .ctab.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
+  .compose-inp{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;outline:none;height:56px;transition:border-color .14s;}
+  .compose-inp:focus{border-color:var(--accent);}
+  .compose-inp::placeholder{color:var(--text3);}
+  .cf{display:flex;align-items:center;justify-content:space-between;margin-top:6px;}
+  .cf-hint{font-size:10.5px;color:var(--text3);}
+  .ctx{width:255px;min-width:255px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:13px;}
+  .ctx::-webkit-scrollbar{width:3px;}
+  .ctx::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+  .ctx-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:9px;}
+  .ctx-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:8px;}
+  .ctx-r{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;gap:6px;}
+  .ctx-k{font-size:11px;color:var(--text3);flex-shrink:0;}
+  .ctx-v{font-size:11px;color:var(--text);font-weight:500;text-align:right;font-family:'JetBrains Mono',monospace;}
+  .ctx-v.g{color:var(--green);}.ctx-v.a{color:var(--accent);}.ctx-v.b{color:var(--blue);}
+  .score-row{display:flex;align-items:center;gap:10px;padding:5px 0 9px;}
+  .score-ring{position:relative;width:48px;height:48px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+  .score-ring::before{content:'';position:absolute;inset:4px;border-radius:50%;background:var(--bg3);}
+  .score-num{position:relative;z-index:1;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;}
+  .score-lbl{font-weight:700;font-size:13px;color:var(--text);margin-bottom:2px;}
+  .score-sub{font-size:10px;color:var(--text2);line-height:1.4;}
+  .prog-row{margin-bottom:6px;}
+  .prog-lr{display:flex;justify-content:space-between;margin-bottom:3px;}
+  .prog-l{font-size:10px;color:var(--text3);}
+  .prog-p{font-size:10px;color:var(--text2);font-family:'JetBrains Mono',monospace;}
+  .prog-track{height:4px;background:var(--bg4);border-radius:4px;overflow:hidden;}
+  .prog-fill{height:100%;border-radius:4px;}
+  .ai-rec{background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(249,115,22,.02));border:1px solid rgba(249,115,22,.25);border-radius:var(--radius);padding:12px;margin-bottom:9px;}
+  .ai-rec-t{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);font-family:'JetBrains Mono',monospace;margin-bottom:6px;}
+  .ai-rec-txt{font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:9px;}
+  .order-item{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);}
+  .order-item:last-child{border-bottom:none;}
+  .order-icon{width:26px;height:26px;border-radius:6px;background:var(--green-dim);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+  .order-name{font-size:11px;font-weight:600;}
+  .order-date{font-size:9.5px;color:var(--text3);}
+  .order-price{font-size:12px;font-weight:700;color:var(--green);font-family:'JetBrains Mono',monospace;margin-left:auto;}
 </style>
 </head>
 <body>
+
 <nav class="sidebar">
   <div class="logo">
     <div class="logo-icon">🔥</div>
-    <div><div class="logo-text">Phoenix</div><div class="logo-sub">Call Intelligence</div></div>
+    <div>
+      <div class="logo-text">Phoenix</div>
+      <div class="logo-sub">Call Intelligence</div>
+    </div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Inbox</div>
-    <div class="nav-item active"><span>📞</span> All Calls <span class="nav-badge" id="badgeCalls">—</span></div>
-    <div class="nav-item"><span>🔴</span> Missed <span class="nav-badge" id="badgeMissed">—</span></div>
-    <div class="nav-item"><span>⚡</span> Live Now <span class="nav-badge green">0</span></div>
-    <div class="nav-item"><span>✅</span> Follow-Ups</div>
+    <div class="nav-item active"><span class="nav-icon">📞</span> All Calls <span class="nav-badge" id="badgeCalls">—</span></div>
+    <div class="nav-item"><span class="nav-icon">🔴</span> Missed <span class="nav-badge" id="badgeMissed">—</span></div>
+    <div class="nav-item"><span class="nav-icon">⚡</span> Live Now <span class="nav-badge green">0</span></div>
+    <div class="nav-item"><span class="nav-icon">✅</span> Follow-Ups</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Work</div>
-    <div class="nav-item"><span>👥</span> Contacts</div>
-    <div class="nav-item"><span>🛒</span> Orders</div>
-    <div class="nav-item"><span>💬</span> SMS Threads</div>
+    <div class="nav-item"><span class="nav-icon">👥</span> Contacts</div>
+    <div class="nav-item"><span class="nav-icon">🛒</span> Orders</div>
+    <div class="nav-item"><span class="nav-icon">💬</span> SMS Threads</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Intelligence</div>
-    <div class="nav-item"><span>📊</span> Analytics</div>
-    <div class="nav-item"><span>🎯</span> Attribution</div>
-    <div class="nav-item"><span>🤖</span> AI Insights</div>
+    <div class="nav-item"><span class="nav-icon">📊</span> Analytics</div>
+    <div class="nav-item"><span class="nav-icon">🎯</span> Attribution</div>
+    <div class="nav-item"><span class="nav-icon">🤖</span> AI Insights</div>
   </div>
   <div class="sidebar-footer">
     <div class="user-card">
-      <div style="width:28px;height:28px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;color:#fff;">G</div>
-      <div><div style="font-weight:600;font-size:12px;">Glen F.</div><div style="font-size:10px;color:var(--text3);">Admin · Phoenix PPC</div></div>
+      <div class="user-av">G</div>
+      <div><div class="user-name">Glen F.</div><div class="user-role">Admin · Phoenix PPC</div></div>
     </div>
   </div>
 </nav>
 
 <div class="list-panel">
   <div class="panel-hdr">
-    <div class="panel-title">Call Intelligence <div class="live-chip" style="display:inline-flex;"><div class="ldot"></div>LIVE</div></div>
-    <div class="search-box"><span style="color:var(--text3);">🔍</span><input type="text" placeholder="Search calls, contacts…"></div>
+    <div class="panel-title">Call Intelligence <div class="live-chip" style="font-size:9px;padding:2px 6px;display:inline-flex;"><div class="ldot"></div>LIVE</div></div>
+    <div class="search-box">
+      <span style="color:var(--text3);">🔍</span>
+      <input type="text" placeholder="Search calls, contacts…">
+    </div>
   </div>
   <div class="call-list" id="callList">
-    <div class="loading"><div class="spinner"></div><div style="font-size:12px;">Connecting to Firebase…</div></div>
+    <div class="loading-state">
+      <div class="spinner"></div>
+      <div style="font-size:12px;">Connecting to Firebase…</div>
+    </div>
   </div>
 </div>
 
@@ -264,52 +636,90 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);displ
     <div class="sc"><div class="sv" style="color:var(--accent);" id="statDuration">—</div><div class="sl">Avg Duration</div></div>
     <div class="sc"><div class="sv" id="statLeadRate">—</div><div class="sl">Lead Rate</div></div>
     <div class="sc"><div class="sv" style="color:var(--red);" id="statMissed">—</div><div class="sl">Missed Today</div></div>
+    <div class="sc"><div class="sv" style="color:var(--green);display:flex;align-items:center;gap:6px;">0 <div class="live-chip" style="font-size:9px;padding:2px 6px;"><div class="ldot"></div>LIVE</div></div><div class="sl">Active Calls</div></div>
   </div>
+
   <div class="det-hdr">
     <div class="cav" id="callerAv">—</div>
     <div style="flex:1;">
       <div class="cname" id="callerName">Select a call</div>
       <div class="cphone" id="callerPhone">—</div>
+      <div class="cpills" id="callerPills"></div>
     </div>
-    <div style="display:flex;gap:6px;">
-      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">💬</button>
-      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">✉️</button>
-      <button class="btn btn-g" style="width:30px;height:30px;padding:0;justify-content:center;">✅</button>
+    <div class="hdr-acts">
+      <button class="btn btn-g bico" title="Send SMS">💬</button>
+      <button class="btn btn-g bico" title="Send Email">✉️</button>
+      <button class="btn btn-g bico" title="Add Task">✅</button>
       <button class="btn btn-p">📞 Call Back</button>
     </div>
   </div>
+
   <div class="det-body">
     <div class="tl-col">
-      <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:11px;display:flex;align-items:center;gap:8px;">Customer Timeline <div style="flex:1;height:1px;background:var(--border);"></div></div>
-      <div id="tlContent"><div style="color:var(--text3);font-size:12px;text-align:center;padding:40px;">Select a call to view timeline</div></div>
+      <div class="sec-t">Customer Timeline</div>
+      <div id="tlContent">
+        <div style="color:var(--text3);font-size:12px;text-align:center;padding:40px;">Select a call to view timeline</div>
+      </div>
     </div>
+
     <div class="ctx">
+      <div class="ctx-card">
+        <div class="ctx-t">Lead Score</div>
+        <div class="score-row" id="ctxScore">
+          <div style="color:var(--text3);font-size:11px;">Select a call</div>
+        </div>
+        <div id="ctxBars"></div>
+      </div>
       <div class="ctx-card">
         <div class="ctx-t">Contact</div>
         <div id="ctxContact"><div style="font-size:11px;color:var(--text3);">—</div></div>
+      </div>
+      <div class="ctx-card">
+        <div class="ctx-t">Attribution</div>
+        <div id="ctxAttrib"><div style="font-size:11px;color:var(--text3);">—</div></div>
       </div>
       <div class="ai-rec">
         <div class="ai-rec-t">✦ AI Recommendation</div>
         <div id="ctxRec"><div style="font-size:11px;color:var(--text3);">Select a call</div></div>
       </div>
+      <div class="ctx-card">
+        <div class="ctx-t">Shopify Orders</div>
+        <div id="ctxOrders"><div style="font-size:11px;color:var(--text3);text-align:center;padding:8px;">—</div></div>
+      </div>
     </div>
   </div>
+
   <div class="compose-bar">
     <div class="ctabs">
-      <button class="ctab active">📝 Note</button>
-      <button class="ctab">💬 SMS</button>
-      <button class="ctab">✉️ Email</button>
-      <button class="ctab">✅ Task</button>
+      <button class="ctab active" onclick="setCTab(this,'note')">📝 Note</button>
+      <button class="ctab" onclick="setCTab(this,'sms')">💬 SMS</button>
+      <button class="ctab" onclick="setCTab(this,'email')">✉️ Email</button>
+      <button class="ctab" onclick="setCTab(this,'task')">✅ Task</button>
     </div>
     <textarea class="compose-inp" placeholder="Add an internal note…"></textarea>
     <div class="cf">
-      <span style="font-size:10.5px;color:var(--text3);">Team-only · Synced to Firebase</span>
+      <span class="cf-hint">Team-only · Synced to Firebase</span>
       <div style="display:flex;gap:6px;">
-        <button class="btn btn-g" style="font-size:11px;padding:5px 10px;">Cancel</button>
-        <button class="btn btn-p" style="font-size:11px;padding:5px 12px;" onclick="saveNote()">Save Note</button>
+        <button class="btn btn-g" style="font-size:11px;padding:5px 10px;" onclick="document.querySelector('.compose-inp').value=''">Cancel</button>
+        <button class="btn btn-p" style="font-size:11px;padding:5px 12px;" id="saveBtn" onclick="saveNote()">Save Note</button>
       </div>
     </div>
   </div>
 </div>
+
+<script>
+  let currentComposeMode = 'note';
+  function setCTab(el, mode) {
+    currentComposeMode = mode;
+    document.querySelectorAll('.ctab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    const hints = {note:'Add an internal note…',sms:'Type an SMS to send via OpenPhone…',email:'Compose an email…',task:'Describe the task…'};
+    const btnLabels = {note:'Save Note',sms:'Send SMS',email:'Send Email',task:'Create Task'};
+    document.querySelector('.compose-inp').placeholder = hints[mode];
+    document.getElementById('saveBtn').textContent = btnLabels[mode];
+    if (mode === 'sms') document.getElementById('saveBtn').onclick = sendSMS;
+    else document.getElementById('saveBtn').onclick = saveNote;
+  }
+</script>
 </body>
 </html>
