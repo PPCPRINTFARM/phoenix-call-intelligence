@@ -1,0 +1,238 @@
+{
+  "name": "CallRail Realtime Ingest → hub.db + Push",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "callrail-realtime-ingest",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "1a000000-0000-0000-0000-000000000001",
+      "name": "CallRail Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-2400, 0],
+      "webhookId": "callrail-realtime-ingest",
+      "notes": "Configure CallRail to POST every post_call event here. URL: https://phoenixphaseconverters.app.n8n.cloud/webhook/callrail-realtime-ingest"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize the CallRail webhook payload. CallRail sends fields at the top\n// level OR nested under `body` depending on the webhook version. Handle both.\nconst input = $input.first().json;\nconst src = input.body || input;\n\n// CallRail post-call webhooks always include `id` (the call ID).\nconst callId = src.id || src.call_id || '';\nif (!callId) {\n  throw new Error('No call id in webhook payload');\n}\n\nreturn [{\n  json: {\n    callId,\n    raw: src\n  }\n}];"
+      },
+      "id": "1a000000-0000-0000-0000-000000000002",
+      "name": "Extract Call ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2160, 0]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "1a000000-0000-0000-0000-000000000003",
+      "name": "Wait 30s for Transcript",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [-1920, 0],
+      "notes": "CallRail transcribes asynchronously. 30s is enough for short/medium calls; long calls fall back to the call_summary field."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.callrail.com/v3/a/906309465/calls/{{ $json.callId }}.json?fields=id,answered,duration,customer_phone_number,customer_name,customer_city,customer_state,tracking_phone_number,start_time,voicemail,direction,call_summary,transcription",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Token token=a67c8451aa1bb6409b013366259b0d28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "1a000000-0000-0000-0000-000000000004",
+      "name": "Fetch Full Call from CallRail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1680, 0],
+      "onError": "continueRegularOutput",
+      "notes": "Account ID 906309465. The API key here matches the working key in the phone-followup skill."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Take the full CallRail record and shape it for both the AI summarizer and\n// the hub.db ingest endpoint.\nconst c = $input.first().json;\n\nfunction toE164(p) {\n  if (!p) return '';\n  const digits = String(p).replace(/\\D/g, '');\n  if (digits.length === 10) return '+1' + digits;\n  if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;\n  return digits ? '+' + digits : '';\n}\n\n// CallRail returns customer_phone_number already in E.164, but be defensive.\nconst phone = toE164(c.customer_phone_number);\nconst trackingPhone = toE164(c.tracking_phone_number);\n\n// CallRail puts geo placeholders like 'DECATUR AL' or 'WIRELESS CALLER' in\n// customer_name when no contact match exists. Skip those — we'd rather have\n// an empty caller_name than misleading text in push notifications.\nconst rawName = (c.customer_name || '').trim();\nconst isGeoPlaceholder =\n  /^[A-Z][A-Z\\s]+$/.test(rawName) ||\n  /TOLLFREE|WIRELESS|UNKNOWN|CALLER/i.test(rawName);\nconst callerName = isGeoPlaceholder ? '' : rawName;\n\nconst transcript = c.transcription || '';\nconst callRailSummary = c.call_summary || '';\n\nreturn [{\n  json: {\n    callId: c.id,\n    phone,\n    trackingPhone,\n    callerName,\n    rawCustomerNameField: rawName,\n    city: c.customer_city || '',\n    state: c.customer_state || '',\n    direction: c.direction,\n    duration: c.duration || 0,\n    answered: !!c.answered,\n    voicemail: !!c.voicemail,\n    startTime: c.start_time,\n    transcript,\n    callRailSummary,\n    transcriptAvailable: transcript.length > 50\n  }\n}];"
+      },
+      "id": "1a000000-0000-0000-0000-000000000005",
+      "name": "Normalize Call Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1440, 0]
+    },
+    {
+      "parameters": {
+        "model": "claude-haiku-4-5-20251001",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "=Summarize this Phoenix Phase Converters sales call in ONE concise sentence (max 25 words) for a push notification on Glen's iPhone. Mention what the caller wanted, key product/HP detail if discussed, and whether they sound ready to buy. No greetings, no preamble — just the sentence.\n\nCALLER: {{ $json.callerName || $json.phone }}\nDURATION: {{ Math.round(($json.duration || 0) / 60) }} min\nVOICEMAIL: {{ $json.voicemail }}\nDIRECTION: {{ $json.direction }}\n\nTRANSCRIPT:\n{{ $json.transcript || $json.callRailSummary || '(no transcript available)' }}"
+            }
+          ]
+        },
+        "options": {
+          "maxTokensToSample": 120,
+          "temperature": 0.2
+        }
+      },
+      "id": "1a000000-0000-0000-0000-000000000006",
+      "name": "Claude Haiku - One-Sentence Summary",
+      "type": "n8n-nodes-base.anthropic",
+      "typeVersion": 1,
+      "position": [-1200, 0],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE_ANTHROPIC_CRED_ID",
+          "name": "Anthropic account"
+        }
+      },
+      "notes": "Uses Haiku per master skill — boss/seo/ads/emails all on Haiku 4.5. Only moltocalls is locked to Sonnet, this is not moltocalls."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge the AI summary back onto the call data. Claude returns the text in\n// `content[0].text` on the n8n Anthropic node.\nconst call = $('Normalize Call Data').first().json;\nconst ai = $input.first().json;\n\nlet aiOneSentence = '';\nif (ai && ai.content && Array.isArray(ai.content) && ai.content[0]) {\n  aiOneSentence = (ai.content[0].text || '').trim();\n} else if (typeof ai === 'string') {\n  aiOneSentence = ai.trim();\n}\n\n// Fallback if Claude failed: use CallRail's own summary, capped to 25 words.\nif (!aiOneSentence) {\n  aiOneSentence = (call.callRailSummary || '').split(/\\s+/).slice(0, 25).join(' ');\n}\n\nreturn [{\n  json: { ...call, aiOneSentence }\n}];"
+      },
+      "id": "1a000000-0000-0000-0000-000000000007",
+      "name": "Merge AI Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-960, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://glens-mac-studio-2.tailca8899.ts.net/api/ingest/callrail",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "phoenix-hub-2026" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"callId\":          \"{{ $json.callId }}\",\n  \"phone\":           \"{{ $json.phone }}\",\n  \"trackingPhone\":   \"{{ $json.trackingPhone }}\",\n  \"callerName\":      {{ JSON.stringify($json.callerName || '') }},\n  \"city\":            {{ JSON.stringify($json.city || '') }},\n  \"state\":           {{ JSON.stringify($json.state || '') }},\n  \"direction\":       \"{{ $json.direction }}\",\n  \"duration\":        {{ $json.duration }},\n  \"answered\":        {{ $json.answered }},\n  \"voicemail\":       {{ $json.voicemail }},\n  \"startTime\":       \"{{ $json.startTime }}\",\n  \"transcript\":      {{ JSON.stringify($json.transcript || '') }},\n  \"callRailSummary\": {{ JSON.stringify($json.callRailSummary || '') }},\n  \"aiOneSentence\":   {{ JSON.stringify($json.aiOneSentence || '') }}\n}",
+        "options": {
+          "timeout": 20000,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "1a000000-0000-0000-0000-000000000008",
+      "name": "Insert into hub.db (Phoenix Hub API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-720, 0],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the Pushover notification body. We pull the customer record returned\n// by Phoenix Hub (`customer.name`, `customer.total_calls`, etc.) and combine\n// it with the AI summary for a rich push.\nconst call = $('Merge AI Summary').first().json;\nconst hub = $input.first().json || {};\nconst cust = hub.customer || {};\n\nconst displayName =\n  cust.name && cust.name.trim() ? cust.name :\n  call.callerName ? call.callerName :\n  call.phone;\n\nconst durationMin = Math.round((call.duration || 0) / 60);\nconst durationLabel = call.duration < 60\n  ? `${call.duration}s`\n  : `${durationMin} min`;\n\nlet stateBadge = '';\nif (call.voicemail) stateBadge = '📭 Voicemail · ';\nelse if (!call.answered) stateBadge = '⛔ Missed · ';\nelse if (call.direction === 'inbound') stateBadge = '📞 Inbound · ';\nelse stateBadge = '📤 Outbound · ';\n\nconst totalCalls = cust.total_calls || 0;\nconst totalRev = cust.total_revenue || 0;\nconst customerStat = totalCalls > 1\n  ? `\\n\\n${totalCalls}× caller${totalRev > 0 ? ` · $${Math.round(totalRev).toLocaleString()} lifetime` : ''}`\n  : (totalCalls === 1 ? '\\n\\nFirst-time caller' : '');\n\nconst title = `${stateBadge}${displayName} · ${durationLabel}`;\nconst body  = `${call.aiOneSentence || call.callRailSummary || '(no summary)'}${customerStat}`;\n\n// Pushover priority: voicemail/missed = high (1), inbound answered = normal (0)\nconst priority = (call.voicemail || !call.answered) ? 1 : 0;\n\nreturn [{\n  json: {\n    title,\n    message: body,\n    priority,\n    url: `https://app.callrail.com/calls/${call.callId}`,\n    url_title: 'Open in CallRail'\n  }\n}];"
+      },
+      "id": "1a000000-0000-0000-0000-000000000009",
+      "name": "Build Push Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-480, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pushover.net/1/messages.json",
+        "sendBody": true,
+        "specifyBody": "form",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "token",     "value": "REPLACE_PUSHOVER_APP_TOKEN" },
+            { "name": "user",      "value": "REPLACE_PUSHOVER_USER_KEY" },
+            { "name": "title",     "value": "={{ $json.title }}" },
+            { "name": "message",   "value": "={{ $json.message }}" },
+            { "name": "priority",  "value": "={{ $json.priority }}" },
+            { "name": "url",       "value": "={{ $json.url }}" },
+            { "name": "url_title", "value": "={{ $json.url_title }}" },
+            { "name": "sound",     "value": "incoming" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "1a000000-0000-0000-0000-00000000000a",
+      "name": "Send Pushover Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, 0],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Final response back to CallRail (it doesn't actually read this, but n8n\n// needs a terminal node for the webhook to return 200).\nreturn [{\n  json: {\n    ok: true,\n    callId: $('Merge AI Summary').first().json.callId,\n    ingestedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "1a000000-0000-0000-0000-00000000000b",
+      "name": "Return OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 0]
+    }
+  ],
+  "connections": {
+    "CallRail Webhook": {
+      "main": [[{ "node": "Extract Call ID", "type": "main", "index": 0 }]]
+    },
+    "Extract Call ID": {
+      "main": [[{ "node": "Wait 30s for Transcript", "type": "main", "index": 0 }]]
+    },
+    "Wait 30s for Transcript": {
+      "main": [[{ "node": "Fetch Full Call from CallRail", "type": "main", "index": 0 }]]
+    },
+    "Fetch Full Call from CallRail": {
+      "main": [[{ "node": "Normalize Call Data", "type": "main", "index": 0 }]]
+    },
+    "Normalize Call Data": {
+      "main": [[{ "node": "Claude Haiku - One-Sentence Summary", "type": "main", "index": 0 }]]
+    },
+    "Claude Haiku - One-Sentence Summary": {
+      "main": [[{ "node": "Merge AI Summary", "type": "main", "index": 0 }]]
+    },
+    "Merge AI Summary": {
+      "main": [[{ "node": "Insert into hub.db (Phoenix Hub API)", "type": "main", "index": 0 }]]
+    },
+    "Insert into hub.db (Phoenix Hub API)": {
+      "main": [[{ "node": "Build Push Payload", "type": "main", "index": 0 }]]
+    },
+    "Build Push Payload": {
+      "main": [[{ "node": "Send Pushover Notification", "type": "main", "index": 0 }]]
+    },
+    "Send Pushover Notification": {
+      "main": [[{ "node": "Return OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": [{"name": "callrail"}, {"name": "realtime"}, {"name": "hub.db"}],
+  "triggerCount": 1,
+  "versionId": "1.0.0",
+  "meta": {
+    "instanceId": "phoenixphaseconverters",
+    "templateCredsSetupCompleted": false
+  }
+}
